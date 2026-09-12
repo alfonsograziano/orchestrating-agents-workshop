@@ -14,6 +14,7 @@ const makeIdea = (overrides: Partial<Idea> = {}): Idea => ({
   stage: 1,
   created_at: NOW,
   updated_at: NOW,
+  archived_at: null,
   ...overrides,
 });
 
@@ -78,5 +79,55 @@ describe('<IdeaCard>', () => {
     render(<IdeaCard idea={makeIdea()} now={NOW} onOpen={vi.fn()} />);
     expect(screen.getByRole('heading')).toHaveTextContent('Build an idea garden');
     expect(screen.getByText(/playful CRUD app/i)).toBeInTheDocument();
+  });
+});
+
+describe('<IdeaCard> — archived (004 US2)', () => {
+  it('shows the stage the idea was frozen at instead of a live level', () => {
+    render(
+      <IdeaCard
+        idea={makeIdea({ stage: 7, archived_at: NOW - 86_400_000 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText(/frozen at level 7/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Level 7$/)).not.toBeInTheDocument();
+  });
+
+  it('labels a stage-16 archived idea as frozen at bloom', () => {
+    render(
+      <IdeaCard idea={makeIdea({ stage: 16, archived_at: NOW })} now={NOW} />,
+    );
+    expect(screen.getByText(/frozen at bloom/i)).toBeInTheDocument();
+  });
+
+  it('dates the card by when it was archived, not when it was planted', () => {
+    render(
+      <IdeaCard
+        idea={makeIdea({ created_at: NOW - 30 * 86_400_000, archived_at: NOW - 2 * 86_400_000 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText(/^Archived /)).toBeInTheDocument();
+    expect(screen.queryByText(/^Watered /)).not.toBeInTheDocument();
+  });
+
+  it('an active idea is unchanged — still watered, still levelled', () => {
+    render(<IdeaCard idea={makeIdea({ stage: 4 })} now={NOW} />);
+    expect(screen.getByText('Level 4')).toBeInTheDocument();
+    expect(screen.getByText(/^Watered /)).toBeInTheDocument();
+  });
+});
+
+describe('<IdeaCard> — description placeholder', () => {
+  it('does not invite watering on an archived card', () => {
+    render(<IdeaCard idea={makeIdea({ description: null, archived_at: NOW })} now={NOW} />);
+    expect(screen.getByText(/no notes were ever added/i)).toBeInTheDocument();
+    expect(screen.queryByText(/water it to grow/i)).not.toBeInTheDocument();
+  });
+
+  it('still invites watering on an active card', () => {
+    render(<IdeaCard idea={makeIdea({ description: null })} now={NOW} />);
+    expect(screen.getByText(/water it to grow/i)).toBeInTheDocument();
   });
 });

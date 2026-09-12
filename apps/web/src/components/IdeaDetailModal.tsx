@@ -14,19 +14,28 @@ import { OverflowMenu } from './OverflowMenu.tsx';
 import { ConfirmDeleteDialog } from './ConfirmDeleteDialog.tsx';
 import { PlantViewport, type PlantViewportHandle } from './PlantViewport.tsx';
 import { ConfettiBurst, type ConfettiVariant } from './ConfettiBurst.tsx';
+import { errorMessage } from '../lib/errorMessage.ts';
 
+/**
+ * The garden passes the mutating handlers; the archive passes the two state
+ * changes a frozen idea still accepts. Which set of affordances renders is
+ * decided by the loaded idea's own archive marker, not by the caller, so the
+ * modal can never offer a control the server would refuse (spec 004 FR-016).
+ */
 type IdeaDetailModalProps = {
   ideaId: string | null;
   onClose: () => void;
-  onAddUpdate: (ideaId: string, input: { note: string }) => Promise<MutationResponse>;
-  onEditIdea: (ideaId: string, input: EditIdeaInput) => Promise<MutationResponse>;
-  onEditUpdate: (
+  onAddUpdate?: (ideaId: string, input: { note: string }) => Promise<MutationResponse>;
+  onEditIdea?: (ideaId: string, input: EditIdeaInput) => Promise<MutationResponse>;
+  onEditUpdate?: (
     ideaId: string,
     updateId: string,
     input: { note: string },
   ) => Promise<MutationResponse>;
-  onDeleteUpdate: (ideaId: string, updateId: string) => Promise<MutationResponse>;
-  onDeleteIdea: (ideaId: string) => Promise<void>;
+  onDeleteUpdate?: (ideaId: string, updateId: string) => Promise<MutationResponse>;
+  onArchiveIdea?: (ideaId: string) => Promise<void>;
+  onUnarchiveIdea?: (ideaId: string) => Promise<void>;
+  onDeleteIdea?: (ideaId: string) => Promise<void>;
 };
 
 export function IdeaDetailModal({
@@ -36,6 +45,8 @@ export function IdeaDetailModal({
   onEditIdea,
   onEditUpdate,
   onDeleteUpdate,
+  onArchiveIdea,
+  onUnarchiveIdea,
   onDeleteIdea,
 }: IdeaDetailModalProps) {
   const headingId = useId();
@@ -93,7 +104,7 @@ export function IdeaDetailModal({
   };
 
   const handleWater = async (note: string) => {
-    if (!localIdea) return;
+    if (!localIdea || !onAddUpdate) return;
     setIsAnimating(true);
     setModalError(null);
     try {
@@ -118,7 +129,7 @@ export function IdeaDetailModal({
         setLocalUpdates((prev) => [result.update!, ...prev]);
       }
     } catch (err) {
-      setModalError(err instanceof Error ? err.message : 'Could not save the watering.');
+      setModalError(errorMessage(err, 'Could not save the watering.'));
       throw err;
     } finally {
       setIsAnimating(false);
@@ -126,14 +137,14 @@ export function IdeaDetailModal({
   };
 
   const handleEditSave = async (input: EditIdeaInput) => {
-    if (!localIdea) return;
+    if (!localIdea || !onEditIdea) return;
     const result = await onEditIdea(localIdea.id, input);
     setLocalIdea(result.idea);
     setIsEditing(false);
   };
 
   const handleEditUpdate = async (updateId: string, note: string) => {
-    if (!localIdea) return;
+    if (!localIdea || !onEditUpdate) return;
     const result = await onEditUpdate(localIdea.id, updateId, { note });
     setLocalIdea(result.idea);
     if (result.update) {
@@ -144,22 +155,67 @@ export function IdeaDetailModal({
   };
 
   const handleDeleteUpdate = async (updateId: string) => {
-    if (!localIdea) return;
+    if (!localIdea || !onDeleteUpdate) return;
     const result = await onDeleteUpdate(localIdea.id, updateId);
     setLocalUpdates((prev) => prev.filter((u) => u.id !== updateId));
     setLocalIdea(result.idea);
   };
 
   const handleDeleteIdea = async () => {
-    if (!localIdea) return;
+    if (!localIdea || !onDeleteIdea) return;
     try {
       await onDeleteIdea(localIdea.id);
       setConfirmDeleteOpen(false);
       onClose();
     } catch (err) {
-      setModalError(err instanceof Error ? err.message : 'Could not delete this idea.');
+      setModalError(errorMessage(err, 'Could not delete this idea.'));
     }
   };
+
+  // Archiving and unarchiving both close the modal on success — the idea has
+  // left the listing behind it. On failure the modal stays put with the reason
+  // on screen and the card still where it was (spec 004 US1 #4).
+  const handleArchiveIdea = async () => {
+    if (!localIdea || !onArchiveIdea) return;
+    setModalError(null);
+    try {
+      await onArchiveIdea(localIdea.id);
+      onClose();
+    } catch (err) {
+      setModalError(errorMessage(err, 'Could not archive this idea.'));
+    }
+  };
+
+  const handleUnarchiveIdea = async () => {
+    if (!localIdea || !onUnarchiveIdea) return;
+    setModalError(null);
+    try {
+      await onUnarchiveIdea(localIdea.id);
+      onClose();
+    } catch (err) {
+      setModalError(errorMessage(err, 'Could not unarchive this idea.'));
+    }
+  };
+
+  const archived = localIdea?.archived_at != null;
+  const menuItems = archived
+    ? [
+        ...(onUnarchiveIdea
+          ? [{ label: 'Unarchive idea', onSelect: () => void handleUnarchiveIdea() }]
+          : []),
+        ...(onDeleteIdea
+          ? [
+              {
+                label: 'Delete forever',
+                destructive: true,
+                onSelect: () => setConfirmDeleteOpen(true),
+              },
+            ]
+          : []),
+      ]
+    : onArchiveIdea
+      ? [{ label: 'Archive idea', onSelect: () => void handleArchiveIdea() }]
+      : [];
 
   return (
     <div
@@ -228,12 +284,14 @@ export function IdeaDetailModal({
           <>
             <header className="shrink-0 flex items-center justify-between gap-sm px-lg md:px-xl py-md border-b border-border bg-paper">
               <div className="flex items-center gap-sm text-caption text-ink/55">
-                <span className="font-mono uppercase tracking-[0.22em]">tending</span>
+                <span className="font-mono uppercase tracking-[0.22em]">
+                  {archived ? 'archived' : 'tending'}
+                </span>
                 <span className="w-6 h-px bg-ink/30" />
                 <span className="italic font-display">an idea garden</span>
               </div>
               <div className="flex items-center gap-xs">
-                {!isEditing && (
+                {!archived && !isEditing && onEditIdea && (
                   <button
                     type="button"
                     onClick={() => setIsEditing(true)}
@@ -243,17 +301,7 @@ export function IdeaDetailModal({
                     Edit
                   </button>
                 )}
-                {!isEditing && (
-                  <OverflowMenu
-                    items={[
-                      {
-                        label: 'Delete idea',
-                        destructive: true,
-                        onSelect: () => setConfirmDeleteOpen(true),
-                      },
-                    ]}
-                  />
-                )}
+                {!isEditing && menuItems.length > 0 && <OverflowMenu items={menuItems} />}
                 <button
                   type="button"
                   onClick={handleCloseClick}
@@ -273,7 +321,7 @@ export function IdeaDetailModal({
                 className="relative flex flex-col gap-md p-lg md:p-xl border-b md:border-b-0 md:border-r border-border bg-gradient-to-br from-paper to-cream/40 min-h-0"
               >
                 <div className="flex flex-col gap-sm">
-                  {isEditing ? (
+                  {!archived && isEditing ? (
                     <EditIdeaForm
                       initialTitle={localIdea.title}
                       initialDescription={localIdea.description}
@@ -293,8 +341,14 @@ export function IdeaDetailModal({
                           {localIdea.description}
                         </p>
                       )}
-                      <div className="mt-xs">
+                      <div className="mt-xs flex items-center gap-sm flex-wrap">
                         <LevelBadge stage={localIdea.stage} />
+                        {archived && (
+                          <span className="inline-flex items-center gap-xs bg-cream text-ink/60 text-caption rounded-full px-sm py-[2px] border border-border">
+                            <span aria-hidden>❄</span>
+                            Frozen in the archive
+                          </span>
+                        )}
                       </div>
                     </>
                   )}
@@ -323,18 +377,34 @@ export function IdeaDetailModal({
                 aria-label="Watering history"
                 className="flex flex-col min-h-0 bg-surface"
               >
-                <div
-                  data-testid="update-form-region"
-                  className="shrink-0 border-b border-border p-lg md:p-xl flex flex-col gap-sm bg-cream/30"
-                >
-                  <h3 className="text-headline-sm text-ink font-display italic">
-                    Water this idea
-                  </h3>
-                  <p className="text-caption text-ink/55">
-                    Each watering bumps the level. Notes are kept forever.
-                  </p>
-                  <UpdateForm onSubmit={handleWater} disabled={isAnimating} />
-                </div>
+                {archived ? (
+                  <div
+                    data-testid="archived-notice"
+                    className="shrink-0 border-b border-border p-lg md:p-xl flex flex-col gap-xs bg-cream/30"
+                  >
+                    <h3 className="text-headline-sm text-ink font-display italic">
+                      This idea is archived
+                    </h3>
+                    <p className="text-caption text-ink/55">
+                      Nothing here can change. Unarchive it to start watering again.
+                    </p>
+                  </div>
+                ) : (
+                  onAddUpdate && (
+                    <div
+                      data-testid="update-form-region"
+                      className="shrink-0 border-b border-border p-lg md:p-xl flex flex-col gap-sm bg-cream/30"
+                    >
+                      <h3 className="text-headline-sm text-ink font-display italic">
+                        Water this idea
+                      </h3>
+                      <p className="text-caption text-ink/55">
+                        Each watering bumps the level. Notes are kept forever.
+                      </p>
+                      <UpdateForm onSubmit={handleWater} disabled={isAnimating} />
+                    </div>
+                  )
+                )}
 
                 <div
                   data-testid="timeline-region"
@@ -351,8 +421,8 @@ export function IdeaDetailModal({
                   </div>
                   <Timeline
                     updates={localUpdates}
-                    onEdit={handleEditUpdate}
-                    onDelete={handleDeleteUpdate}
+                    onEdit={archived || !onEditUpdate ? undefined : handleEditUpdate}
+                    onDelete={archived || !onDeleteUpdate ? undefined : handleDeleteUpdate}
                   />
                 </div>
               </section>

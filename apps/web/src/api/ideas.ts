@@ -66,6 +66,20 @@ export async function listIdeas(): Promise<Idea[]> {
   return parsed.data;
 }
 
+export async function listArchivedIdeas(): Promise<Idea[]> {
+  const res = await doFetch(`${API_BASE_URL}/api/ideas/archived`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) throw await readError(res);
+  const json = await res.json();
+  const parsed = IdeaListSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new ApiClientError(500, 'Malformed response from server', parsed.error.flatten());
+  }
+  return parsed.data;
+}
+
 export async function createIdea(input: NewIdeaInput): Promise<Idea> {
   const payload = NewIdeaInputSchema.parse(input);
   const res = await doFetch(`${API_BASE_URL}/api/ideas`, {
@@ -126,6 +140,28 @@ export async function deleteIdea(id: string): Promise<void> {
   // 404 is success-equivalent here — the idea is already gone.
   if (res.ok || res.status === 404) return;
   throw await readError(res);
+}
+
+async function setArchived(id: string, action: 'archive' | 'unarchive'): Promise<Idea> {
+  const res = await doFetch(
+    `${API_BASE_URL}/api/ideas/${encodeURIComponent(id)}/${action}`,
+    { method: 'POST', headers: { Accept: 'application/json' } },
+  );
+  if (!res.ok) throw await readError(res);
+  const json = await res.json();
+  const parsed = IdeaSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new ApiClientError(500, 'Malformed response from server', parsed.error.flatten());
+  }
+  return parsed.data;
+}
+
+export function archiveIdea(id: string): Promise<Idea> {
+  return setArchived(id, 'archive');
+}
+
+export function unarchiveIdea(id: string): Promise<Idea> {
+  return setArchived(id, 'unarchive');
 }
 
 export async function addUpdate(

@@ -20,7 +20,7 @@ export function App() {
     editIdea,
     editUpdate,
     deleteUpdate,
-    deleteIdea,
+    archiveIdea,
   } = useIdeas();
 
   const handleCreate = async (input: NewIdeaInput) => {
@@ -66,7 +66,7 @@ export function App() {
         onEditIdea={editIdea}
         onEditUpdate={editUpdate}
         onDeleteUpdate={deleteUpdate}
-        onDeleteIdea={deleteIdea}
+        onArchiveIdea={archiveIdea}
       />
     </main>
   );

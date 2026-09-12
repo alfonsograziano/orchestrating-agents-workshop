@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+
 type HeaderProps = {
   onPlantSeed: () => void;
   count: number;
@@ -20,6 +22,12 @@ export function Header({ onPlantSeed, count }: HeaderProps) {
           </span>
         </div>
         <div className="flex items-center gap-md">
+          <Link
+            to="/app/archive"
+            className="text-label-md uppercase tracking-[0.22em] text-ink/55 hover:text-primary transition-colors"
+          >
+            Archive
+          </Link>
           <span className="hidden md:inline-flex items-baseline gap-xs text-label-md uppercase tracking-[0.22em] text-ink/55">
             <span className="font-display not-italic text-[28px] text-ink/85 leading-none">
               {formattedCount}

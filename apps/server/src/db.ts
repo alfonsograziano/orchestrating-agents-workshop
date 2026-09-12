@@ -15,6 +15,7 @@ export type IdeaRow = {
   stage: number;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
 };
 
 export type IdeaUpdateRow = {
@@ -37,6 +38,7 @@ export type TxHandle = {
 export type AppDb = {
   raw: Database.Database;
   selectAllIdeas: Database.Statement<unknown[], IdeaRow>;
+  selectArchivedIdeas: Database.Statement<unknown[], IdeaRow>;
   insertIdea: Database.Statement<[IdeaRow]>;
   selectIdeaById: Database.Statement<[string], IdeaRow | undefined>;
   selectUpdatesForIdea: Database.Statement<[string], IdeaUpdateRow>;
@@ -53,6 +55,8 @@ export type AppDb = {
   }>;
   recomputeIdeaStage: Database.Statement<{ id: string; updated_at: number }>;
   deleteIdea: Database.Statement<[string]>;
+  archiveIdea: Database.Statement<{ id: string; archived_at: number }>;
+  unarchiveIdea: Database.Statement<[string]>;
   runUpdateMutation<T>(ideaId: string, fn: (tx: TxHandle) => T): T;
   close(): void;
 };
@@ -66,6 +70,7 @@ const SCHEMA_DDL = `
     stage       INTEGER NOT NULL DEFAULT 1,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
+    archived_at INTEGER,
     CHECK (length(title) BETWEEN 1 AND 80),
     CHECK (description IS NULL OR length(description) <= 500),
     CHECK (stage BETWEEN 1 AND 16)
@@ -88,6 +93,13 @@ const SCHEMA_DDL = `
     ON idea_updates(idea_id, created_at DESC);
 `;
 
+// Created after the additive migration below, because a database file written
+// before the archive feature has no `archived_at` column to index yet.
+const ARCHIVE_INDEX_DDL = `
+  CREATE INDEX IF NOT EXISTS idx_ideas_archived_at_desc
+    ON ideas(archived_at DESC);
+`;
+
 export function openDb(dbPath: string = process.env.DB_PATH ?? 'data/garden.db'): AppDb {
   const absolute = resolve(dbPath);
   mkdirSync(dirname(absolute), { recursive: true });
@@ -95,20 +107,37 @@ export function openDb(dbPath: string = process.env.DB_PATH ?? 'data/garden.db')
   raw.pragma('journal_mode = WAL');
   raw.pragma('foreign_keys = ON');
   raw.exec(SCHEMA_DDL);
+  // The workshop has no migration tooling, so a pre-004 garden.db is upgraded
+  // in place with the one additive column the feature needs.
+  const ideaColumns = raw.prepare('PRAGMA table_info(ideas)').all() as { name: string }[];
+  if (!ideaColumns.some((c) => c.name === 'archived_at')) {
+    raw.exec('ALTER TABLE ideas ADD COLUMN archived_at INTEGER');
+  }
+  raw.exec(ARCHIVE_INDEX_DDL);
 
+  // Archived ideas are excluded here rather than filtered downstream, so every
+  // caller that lists or counts the garden inherits the separation (FR-011).
   const selectAllIdeas = raw.prepare(
-    `SELECT id, title, description, species, stage, created_at, updated_at
+    `SELECT id, title, description, species, stage, created_at, updated_at, archived_at
        FROM ideas
+       WHERE archived_at IS NULL
        ORDER BY created_at DESC, id DESC`,
   ) as Database.Statement<unknown[], IdeaRow>;
 
+  const selectArchivedIdeas = raw.prepare(
+    `SELECT id, title, description, species, stage, created_at, updated_at, archived_at
+       FROM ideas
+       WHERE archived_at IS NOT NULL
+       ORDER BY archived_at DESC, id DESC`,
+  ) as Database.Statement<unknown[], IdeaRow>;
+
   const insertIdea = raw.prepare(
-    `INSERT INTO ideas (id, title, description, species, stage, created_at, updated_at)
-     VALUES (@id, @title, @description, @species, @stage, @created_at, @updated_at)`,
+    `INSERT INTO ideas (id, title, description, species, stage, created_at, updated_at, archived_at)
+     VALUES (@id, @title, @description, @species, @stage, @created_at, @updated_at, @archived_at)`,
   ) as Database.Statement<[IdeaRow]>;
 
   const selectIdeaById = raw.prepare(
-    `SELECT id, title, description, species, stage, created_at, updated_at
+    `SELECT id, title, description, species, stage, created_at, updated_at, archived_at
        FROM ideas
        WHERE id = ?`,
   ) as Database.Statement<[string], IdeaRow | undefined>;
@@ -167,6 +196,17 @@ export function openDb(dbPath: string = process.env.DB_PATH ?? 'data/garden.db')
     `DELETE FROM ideas WHERE id = ?`,
   ) as Database.Statement<[string]>;
 
+  // `archived_at IS NULL` makes a repeat archive a no-op instead of moving the
+  // timestamp (FR-005). Neither statement touches `updated_at`: archiving is
+  // not a content change, so "last watered" survives the round trip (FR-003).
+  const archiveIdea = raw.prepare(
+    `UPDATE ideas SET archived_at = @archived_at WHERE id = @id AND archived_at IS NULL`,
+  ) as Database.Statement<{ id: string; archived_at: number }>;
+
+  const unarchiveIdea = raw.prepare(
+    `UPDATE ideas SET archived_at = NULL WHERE id = ?`,
+  ) as Database.Statement<[string]>;
+
   const tx: TxHandle = {
     insertUpdate,
     updateUpdateNote,
@@ -192,6 +232,7 @@ export function openDb(dbPath: string = process.env.DB_PATH ?? 'data/garden.db')
   return {
     raw,
     selectAllIdeas,
+    selectArchivedIdeas,
     insertIdea,
     selectIdeaById,
     selectUpdatesForIdea,
@@ -203,6 +244,8 @@ export function openDb(dbPath: string = process.env.DB_PATH ?? 'data/garden.db')
     updateIdeaMeta,
     recomputeIdeaStage,
     deleteIdea,
+    archiveIdea,
+    unarchiveIdea,
     runUpdateMutation,
     close() {
       raw.close();

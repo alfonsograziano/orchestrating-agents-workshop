@@ -13,6 +13,7 @@ const buildIdea = (overrides: Partial<Idea> = {}): Idea => ({
   stage: 3,
   created_at: 1746783402000,
   updated_at: 1746783402000,
+  archived_at: null,
   ...overrides,
 });
 
@@ -67,6 +68,8 @@ function renderModal(overrides: Partial<React.ComponentProps<typeof IdeaDetailMo
     onEditIdea: vi.fn(),
     onEditUpdate: vi.fn(),
     onDeleteUpdate: vi.fn(),
+    onArchiveIdea: vi.fn(),
+    onUnarchiveIdea: vi.fn(),
     onDeleteIdea: vi.fn(),
     ...overrides,
   } as React.ComponentProps<typeof IdeaDetailModal>;
@@ -435,73 +438,180 @@ describe('<IdeaDetailModal> — confetti portal (FR-043)', () => {
   });
 });
 
-describe('<IdeaDetailModal> — US5 (delete idea)', () => {
-  it('clicking the overflow → Delete idea opens the confirm dialog', async () => {
-    const user = userEvent.setup();
+const ARCHIVED_AT = 1746790000000;
+const archivedIdea = (overrides: Partial<Idea> = {}) =>
+  buildIdea({ archived_at: ARCHIVED_AT, ...overrides });
+
+async function openHeaderMenu(user: ReturnType<typeof userEvent.setup>) {
+  const triggers = screen.getAllByRole('button', { name: /more options/i });
+  // The header's menu is the first on screen; timeline entries own the rest.
+  await user.click(triggers[0]!);
+}
+
+describe('<IdeaDetailModal> — archiving an active idea (004 US1)', () => {
+  beforeEach(() => {
     useIdeaDetailMock.mockReturnValue({
       status: 'ready',
       idea: buildIdea(),
       updates: [],
     });
+  });
+
+  it('offers Archive idea, and does not offer permanent deletion (FR-019)', async () => {
+    const user = userEvent.setup();
     renderModal();
-    const triggers = screen.getAllByRole('button', { name: /more options/i });
-    // First more-options button in the header.
-    await user.click(triggers[0]!);
-    await user.click(screen.getByRole('menuitem', { name: /delete idea/i }));
+    await openHeaderMenu(user);
+
+    expect(screen.getByRole('menuitem', { name: /archive idea/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /delete/i })).not.toBeInTheDocument();
+  });
+
+  it('archiving calls onArchiveIdea and closes the modal on success', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onArchiveIdea = vi.fn().mockResolvedValue(undefined);
+    renderModal({ onClose, onArchiveIdea });
+
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /archive idea/i }));
+
+    await waitFor(() => expect(onArchiveIdea).toHaveBeenCalledWith(ULID));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('on a rejected archive the modal stays open with a visible reason (US1 scenario 4)', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onArchiveIdea = vi.fn().mockRejectedValue(new Error('boom'));
+    renderModal({ onClose, onArchiveIdea });
+
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /archive idea/i }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('boom'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('<IdeaDetailModal> — an archived idea is read-only (004 US2)', () => {
+  beforeEach(() => {
+    useIdeaDetailMock.mockReturnValue({
+      status: 'ready',
+      idea: archivedIdea(),
+      updates: [buildUpdate(), buildUpdate({ id: 'V'.repeat(26), note: 'second watering' })],
+    });
+  });
+
+  it('shows the title, description, level and full timeline', () => {
+    renderModal();
+    expect(screen.getByRole('heading', { name: 'My Idea' })).toBeInTheDocument();
+    expect(screen.getByText('a description')).toBeInTheDocument();
+    expect(screen.getByText('Level 3')).toBeInTheDocument();
+    expect(screen.getByText('first watering')).toBeInTheDocument();
+    expect(screen.getByText('second watering')).toBeInTheDocument();
+  });
+
+  it('has no watering form, no Edit button, and no per-entry menus', () => {
+    renderModal();
+    expect(screen.queryByTestId('update-form-region')).not.toBeInTheDocument();
+    expect(screen.getByTestId('archived-notice')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+    // Only the header menu survives; timeline entries expose none.
+    expect(screen.getAllByRole('button', { name: /more options/i })).toHaveLength(1);
+  });
+
+  it('labels the idea as frozen', () => {
+    renderModal();
+    expect(screen.getByText(/frozen in the archive/i)).toBeInTheDocument();
+  });
+});
+
+describe('<IdeaDetailModal> — unarchive and permanent delete (004 US3, US4)', () => {
+  beforeEach(() => {
+    useIdeaDetailMock.mockReturnValue({
+      status: 'ready',
+      idea: archivedIdea(),
+      updates: [],
+    });
+  });
+
+  it('offers Unarchive idea and Delete forever, but never Archive', async () => {
+    const user = userEvent.setup();
+    renderModal();
+    await openHeaderMenu(user);
+
+    expect(screen.getByRole('menuitem', { name: /unarchive idea/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /delete forever/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /^archive idea$/i })).not.toBeInTheDocument();
+  });
+
+  it('unarchiving calls onUnarchiveIdea and closes the modal', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onUnarchiveIdea = vi.fn().mockResolvedValue(undefined);
+    renderModal({ onClose, onUnarchiveIdea });
+
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /unarchive idea/i }));
+
+    await waitFor(() => expect(onUnarchiveIdea).toHaveBeenCalledWith(ULID));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('on a rejected unarchive the modal stays open with a visible reason', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onUnarchiveIdea = vi.fn().mockRejectedValue(new Error('nope'));
+    renderModal({ onClose, onUnarchiveIdea });
+
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /unarchive idea/i }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('nope'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('Delete forever goes through the existing confirmation dialog', async () => {
+    const user = userEvent.setup();
+    renderModal();
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /delete forever/i }));
     expect(screen.getByText(/Delete "My Idea"\?/)).toBeInTheDocument();
   });
 
   it('Cancel closes the dialog without calling onDeleteIdea', async () => {
     const user = userEvent.setup();
-    useIdeaDetailMock.mockReturnValue({
-      status: 'ready',
-      idea: buildIdea(),
-      updates: [],
-    });
     const onDeleteIdea = vi.fn();
     renderModal({ onDeleteIdea });
 
-    const triggers = screen.getAllByRole('button', { name: /more options/i });
-    await user.click(triggers[0]!);
-    await user.click(screen.getByRole('menuitem', { name: /delete idea/i }));
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /delete forever/i }));
     await user.click(screen.getByRole('button', { name: /cancel/i }));
     expect(onDeleteIdea).not.toHaveBeenCalled();
   });
 
   it('confirming calls onDeleteIdea and (on success) closes both dialog and modal', async () => {
     const user = userEvent.setup();
-    useIdeaDetailMock.mockReturnValue({
-      status: 'ready',
-      idea: buildIdea(),
-      updates: [],
-    });
     const onClose = vi.fn();
     const onDeleteIdea = vi.fn().mockResolvedValue(undefined);
     renderModal({ onClose, onDeleteIdea });
 
-    const triggers = screen.getAllByRole('button', { name: /more options/i });
-    await user.click(triggers[0]!);
-    await user.click(screen.getByRole('menuitem', { name: /delete idea/i }));
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /delete forever/i }));
     await user.click(screen.getByRole('button', { name: /yes, delete forever/i }));
 
     await waitFor(() => expect(onDeleteIdea).toHaveBeenCalled());
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
-  it('on error from onDeleteIdea, the modal stays open and a toast/error region is shown', async () => {
+  it('on error from onDeleteIdea, the modal stays open and the error is shown', async () => {
     const user = userEvent.setup();
-    useIdeaDetailMock.mockReturnValue({
-      status: 'ready',
-      idea: buildIdea(),
-      updates: [],
-    });
     const onClose = vi.fn();
     const onDeleteIdea = vi.fn().mockRejectedValue(new Error('boom'));
     renderModal({ onClose, onDeleteIdea });
 
-    const triggers = screen.getAllByRole('button', { name: /more options/i });
-    await user.click(triggers[0]!);
-    await user.click(screen.getByRole('menuitem', { name: /delete idea/i }));
+    await openHeaderMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: /delete forever/i }));
     await user.click(screen.getByRole('button', { name: /yes, delete forever/i }));
 
     await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument());

@@ -19,6 +19,7 @@ export function IdeaCard({ idea, index, now, onOpen }: IdeaCardProps) {
   const clampedStage = Math.max(0, Math.min(MAX_STAGE, idea.stage));
   const fillPct = (clampedStage / MAX_STAGE) * 100;
   const bloomed = idea.stage >= MAX_STAGE;
+  const archived = idea.archived_at != null;
 
   const handleActivate = () => {
     if (onOpen) onOpen(idea.id);
@@ -54,18 +55,28 @@ export function IdeaCard({ idea, index, now, onOpen }: IdeaCardProps) {
         )}
         <span
           className={
-            bloomed
-              ? 'bg-amber/20 text-wilted text-caption rounded-full px-sm py-[2px] font-display italic'
-              : 'bg-primary-soft text-primary-hover text-caption rounded-full px-sm py-[2px]'
+            archived
+              ? 'bg-cream text-ink/60 border border-border text-caption rounded-full px-sm py-[2px]'
+              : bloomed
+                ? 'bg-amber/20 text-wilted text-caption rounded-full px-sm py-[2px] font-display italic'
+                : 'bg-primary-soft text-primary-hover text-caption rounded-full px-sm py-[2px]'
           }
         >
-          {bloomed ? 'Bloomed' : `Level ${idea.stage}`}
+          {archived
+            ? `Frozen at ${bloomed ? 'bloom' : `level ${idea.stage}`}`
+            : bloomed
+              ? 'Bloomed'
+              : `Level ${idea.stage}`}
         </span>
       </div>
 
       <div className="relative h-48 flex items-center justify-center">
         <div className="plant-rise">
-          <PlantImage species={idea.species} stage={idea.stage} className="w-44 h-44 object-contain" />
+          <PlantImage
+            species={idea.species}
+            stage={idea.stage}
+            className={`w-44 h-44 object-contain ${archived ? 'grayscale opacity-70' : ''}`}
+          />
         </div>
       </div>
 
@@ -79,7 +90,7 @@ export function IdeaCard({ idea, index, now, onOpen }: IdeaCardProps) {
         </p>
       ) : (
         <p className="text-body-sm italic text-ink/35 min-h-[2.5em]">
-          no notes yet — water it to grow.
+          {archived ? 'no notes were ever added.' : 'no notes yet — water it to grow.'}
         </p>
       )}
 
@@ -96,7 +107,9 @@ export function IdeaCard({ idea, index, now, onOpen }: IdeaCardProps) {
             {String(clampedStage).padStart(2, '0')}/{MAX_STAGE}
           </span>
           <span className="italic">
-            Watered {relativeTime(reference, idea.created_at)}
+            {archived && idea.archived_at != null
+              ? `Archived ${relativeTime(reference, idea.archived_at)}`
+              : `Watered ${relativeTime(reference, idea.created_at)}`}
           </span>
         </div>
       </div>

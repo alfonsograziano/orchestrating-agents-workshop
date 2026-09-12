@@ -15,6 +15,10 @@ export const IdeaSchema = z.object({
   stage: StageSchema,
   created_at: z.number().int().nonnegative(),
   updated_at: z.number().int().nonnegative(),
+  // The single source of truth for active vs archived: null means the idea is
+  // in the garden, a timestamp means it is frozen in the archive. No second
+  // flag mirrors this (spec 004 Key Entities).
+  archived_at: z.number().int().nonnegative().nullable(),
 });
 export type Idea = z.infer<typeof IdeaSchema>;
 
@@ -34,6 +38,15 @@ export const NewIdeaInputSchema = z.object({
 });
 export type NewIdeaInput = z.input<typeof NewIdeaInputSchema>;
 export type NewIdeaPayload = z.output<typeof NewIdeaInputSchema>;
+
+/**
+ * Error codes the client must be able to tell apart from a generic failure
+ * (spec 004 FR-007). `idea_archived` means the target is frozen;
+ * `idea_not_archived` means a permanent delete was aimed at a live idea,
+ * which the garden no longer offers (FR-019).
+ */
+export const ARCHIVED_IDEA_ERROR = 'idea_archived';
+export const NOT_ARCHIVED_IDEA_ERROR = 'idea_not_archived';
 
 export const ApiErrorSchema = z.object({
   error: z.string(),

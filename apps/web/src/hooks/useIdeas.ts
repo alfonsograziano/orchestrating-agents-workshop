@@ -10,8 +10,8 @@ import type {
 import {
   ApiClientError,
   addUpdate as apiAddUpdate,
+  archiveIdea as apiArchiveIdea,
   createIdea as apiCreateIdea,
-  deleteIdea as apiDeleteIdea,
   deleteUpdate as apiDeleteUpdate,
   listIdeas,
   patchIdea as apiPatchIdea,
@@ -35,7 +35,7 @@ export type UseIdeasResult = UseIdeasState & {
     input: EditIdeaUpdateInput,
   ) => Promise<MutationResponse>;
   deleteUpdate: (ideaId: string, updateId: string) => Promise<MutationResponse>;
-  deleteIdea: (ideaId: string) => Promise<void>;
+  archiveIdea: (ideaId: string) => Promise<void>;
 };
 
 const TEMP_ID_PREFIX = 'temp-';
@@ -50,6 +50,7 @@ function makeTempIdea(input: NewIdeaInput): Idea {
     stage: 1,
     created_at: now,
     updated_at: now,
+    archived_at: null,
   };
 }
 
@@ -142,8 +143,10 @@ export function useIdeas(): UseIdeasResult {
     [],
   );
 
-  const deleteIdea = useCallback(async (ideaId: string): Promise<void> => {
-    await apiDeleteIdea(ideaId);
+  // Deliberately not optimistic: a card that vanishes and then reappears when
+  // the server says no is worse than a card that waits (spec 004 US1 #4).
+  const archiveIdea = useCallback(async (ideaId: string): Promise<void> => {
+    await apiArchiveIdea(ideaId);
     setState((s) => ({ ...s, ideas: s.ideas.filter((i) => i.id !== ideaId) }));
   }, []);
 
@@ -155,6 +158,6 @@ export function useIdeas(): UseIdeasResult {
     editIdea,
     editUpdate,
     deleteUpdate,
-    deleteIdea,
+    archiveIdea,
   };
 }

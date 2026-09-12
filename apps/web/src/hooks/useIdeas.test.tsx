@@ -13,6 +13,7 @@ const buildIdea = (overrides: Partial<Idea> = {}): Idea => ({
   stage: 1,
   created_at: 1746783402000,
   updated_at: 1746783402000,
+  archived_at: null,
   ...overrides,
 });
 
@@ -317,14 +318,16 @@ describe('useIdeas — editUpdate + deleteUpdate (US4)', () => {
   });
 });
 
-describe('useIdeas — deleteIdea (US5)', () => {
-  it('removes the idea from the cache on success', async () => {
+describe('useIdeas — archiveIdea (004 US1)', () => {
+  it('removes the idea from the garden cache once the server confirms', async () => {
     const before = buildIdea();
+    const archiveCalls: string[] = [];
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_url, init: RequestInit | undefined) => {
-        if (init?.method === 'DELETE') {
-          return new Response(null, { status: 204 });
+      vi.fn(async (url: string, init: RequestInit | undefined) => {
+        if (init?.method === 'POST' && url.endsWith('/archive')) {
+          archiveCalls.push(url);
+          return okJson(200, { ...before, archived_at: Date.now() });
         }
         return okJson(200, [before]);
       }),
@@ -335,17 +338,18 @@ describe('useIdeas — deleteIdea (US5)', () => {
     expect(result.current.ideas).toHaveLength(1);
 
     await act(async () => {
-      await result.current.deleteIdea(before.id);
+      await result.current.archiveIdea(before.id);
     });
+    expect(archiveCalls).toEqual([`/api/ideas/${before.id}/archive`]);
     expect(result.current.ideas).toEqual([]);
   });
 
-  it('leaves the cache untouched on a 500 error', async () => {
+  it('leaves the card in the garden when the server rejects the archive', async () => {
     const before = buildIdea();
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_url, init: RequestInit | undefined) => {
-        if (init?.method === 'DELETE') {
+      vi.fn(async (url: string, init: RequestInit | undefined) => {
+        if (init?.method === 'POST' && url.endsWith('/archive')) {
           return okJson(500, { error: 'internal_error' });
         }
         return okJson(200, [before]);
@@ -356,8 +360,9 @@ describe('useIdeas — deleteIdea (US5)', () => {
     await waitFor(() => expect(result.current.status).toBe('ready'));
 
     await act(async () => {
-      await expect(result.current.deleteIdea(before.id)).rejects.toThrow();
+      await expect(result.current.archiveIdea(before.id)).rejects.toThrow();
     });
+    // Never optimistically removed, so there is nothing to put back.
     expect(result.current.ideas).toEqual([before]);
   });
 });

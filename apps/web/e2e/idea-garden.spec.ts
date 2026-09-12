@@ -1,6 +1,12 @@
 import { expect, test } from '@playwright/test';
+import { resetGarden } from './reset.ts';
 
 test.describe('Idea Garden — Step 1 baseline', () => {
+  // Start from an empty garden regardless of which spec file ran first.
+  test.beforeEach(async ({ request }) => {
+    await resetGarden(request);
+  });
+
   test('empty state → plant first seed → card appears → reload preserves', async ({ page }) => {
     // ---------- 1. Empty state on a fresh DB (PRD §1.6 #2, US1 scenario 1) ----------
     await page.goto('/app');

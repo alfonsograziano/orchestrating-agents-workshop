@@ -42,6 +42,13 @@ async function water(
   return MutationResponseSchema.parse(res.json());
 }
 
+async function archive(app: FastifyTypedInstance, ideaId: string): Promise<void> {
+  const res = await app.inject({ method: 'POST', url: `/api/ideas/${ideaId}/archive` });
+  if (res.statusCode !== 200) {
+    throw new Error(`archive expected 200, got ${res.statusCode}: ${res.body}`);
+  }
+}
+
 let tempDir: string;
 let dbFile: string;
 let db: AppDb;
@@ -652,11 +659,12 @@ describe('DELETE /api/ideas/:id/updates/:updateId (T049, US4)', () => {
   });
 });
 
-describe('DELETE /api/ideas/:id (T059, US5)', () => {
+describe('DELETE /api/ideas/:id (T059, US5; 004 US4)', () => {
   it('returns 204 and removes the idea + cascades updates', async () => {
     const { id } = await plantIdea(app);
     await water(app, id, 'one');
     await water(app, id, 'two');
+    await archive(app, id);
 
     const res = await app.inject({ method: 'DELETE', url: `/api/ideas/${id}` });
     expect(res.statusCode).toBe(204);
@@ -677,6 +685,7 @@ describe('DELETE /api/ideas/:id (T059, US5)', () => {
     for (let i = 0; i < 5; i++) {
       await water(app, id, `update ${i}`);
     }
+    await archive(app, id);
     const res = await app.inject({ method: 'DELETE', url: `/api/ideas/${id}` });
     expect(res.statusCode).toBe(204);
     const updateCount = db.raw
@@ -690,6 +699,16 @@ describe('DELETE /api/ideas/:id (T059, US5)', () => {
     const res = await app.inject({ method: 'DELETE', url: `/api/ideas/${fake}` });
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBe('idea_not_found');
+  });
+
+  it('refuses to delete an active idea — archiving is the only way to clear the garden (FR-019)', async () => {
+    const { id } = await plantIdea(app);
+    const res = await app.inject({ method: 'DELETE', url: `/api/ideas/${id}` });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('idea_not_archived');
+
+    const still = await app.inject({ method: 'GET', url: `/api/ideas/${id}` });
+    expect(still.statusCode).toBe(200);
   });
 });
 
@@ -705,5 +724,251 @@ describe('POST /api/ideas — round-trip preservation (M1: emoji / HTML injectio
     const idea = IdeaSchema.parse(res.json());
     expect(idea.title).toBe(tricky);
     expect(idea.description).toBe('😀 desc & <b>bold</b>');
+  });
+});
+
+describe('POST /api/ideas/:id/archive (004 US1)', () => {
+  it('returns the idea with archived_at set and removes it from GET /api/ideas', async () => {
+    const { id } = await plantIdea(app, { title: 'to be archived' });
+    const keep = await plantIdea(app, { title: 'stays in the garden' });
+
+    const res = await app.inject({ method: 'POST', url: `/api/ideas/${id}/archive` });
+    expect(res.statusCode).toBe(200);
+    const archived = IdeaSchema.parse(res.json());
+    expect(archived.archived_at).toBeTypeOf('number');
+
+    const list = IdeaListSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/ideas' })).json(),
+    );
+    expect(list.map((i) => i.id)).toEqual([keep.id]);
+  });
+
+  it('preserves stage, history and updated_at (FR-002, FR-003)', async () => {
+    const { id } = await plantIdea(app);
+    await water(app, id, 'one');
+    await water(app, id, 'two');
+    const before = IdeaDetailResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `/api/ideas/${id}` })).json(),
+    );
+
+    await archive(app, id);
+
+    const after = IdeaDetailResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `/api/ideas/${id}` })).json(),
+    );
+    expect(after.idea.stage).toBe(before.idea.stage);
+    expect(after.idea.updated_at).toBe(before.idea.updated_at);
+    expect(after.idea.title).toBe(before.idea.title);
+    expect(after.idea.species).toBe(before.idea.species);
+    expect(after.updates).toEqual(before.updates);
+  });
+
+  it('archiving twice is a harmless no-op that does not move archived_at (FR-005)', async () => {
+    const { id } = await plantIdea(app);
+    const first = IdeaSchema.parse(
+      (await app.inject({ method: 'POST', url: `/api/ideas/${id}/archive` })).json(),
+    );
+    const second = IdeaSchema.parse(
+      (await app.inject({ method: 'POST', url: `/api/ideas/${id}/archive` })).json(),
+    );
+    expect(second.archived_at).toBe(first.archived_at);
+  });
+
+  it('returns 404 idea_not_found for an unknown id', async () => {
+    const fake = 'A'.repeat(26);
+    const res = await app.inject({ method: 'POST', url: `/api/ideas/${fake}/archive` });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe('idea_not_found');
+  });
+});
+
+describe('GET /api/ideas/archived (004 US2)', () => {
+  it('returns [] when nothing is archived', async () => {
+    await plantIdea(app);
+    const res = await app.inject({ method: 'GET', url: '/api/ideas/archived' });
+    expect(res.statusCode).toBe(200);
+    expect(IdeaListSchema.parse(res.json())).toEqual([]);
+  });
+
+  it('lists only archived ideas, most-recently-archived first (FR-004, FR-012)', async () => {
+    const older = await plantIdea(app, { title: 'older' });
+    const newer = await plantIdea(app, { title: 'newer' });
+    await plantIdea(app, { title: 'active' });
+
+    await archive(app, older.id);
+    await new Promise((r) => setTimeout(r, 2));
+    await archive(app, newer.id);
+
+    const list = IdeaListSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/ideas/archived' })).json(),
+    );
+    expect(list.map((i) => i.id)).toEqual([newer.id, older.id]);
+  });
+
+  it('an archived idea is still readable in full (FR-008)', async () => {
+    const { id } = await plantIdea(app, { title: 'readable', description: 'still here' });
+    await water(app, id, 'a watering');
+    await archive(app, id);
+
+    const res = await app.inject({ method: 'GET', url: `/api/ideas/${id}` });
+    expect(res.statusCode).toBe(200);
+    const detail = IdeaDetailResponseSchema.parse(res.json());
+    expect(detail.idea.description).toBe('still here');
+    expect(detail.updates).toHaveLength(1);
+  });
+});
+
+describe('archived ideas are frozen (004 FR-006, FR-007)', () => {
+  async function archivedIdeaWithUpdate(): Promise<{ id: string; updateId: string }> {
+    const { id } = await plantIdea(app);
+    const { update } = await water(app, id, 'the only watering');
+    if (!update) throw new Error('expected an update row');
+    await archive(app, id);
+    return { id, updateId: update.id };
+  }
+
+  function snapshot(id: string) {
+    return {
+      idea: db.raw.prepare('SELECT * FROM ideas WHERE id = ?').get(id),
+      updates: db.raw.prepare('SELECT * FROM idea_updates WHERE idea_id = ?').all(id),
+    };
+  }
+
+  it('rejects a title/description edit with 409 idea_archived and changes nothing', async () => {
+    const { id } = await archivedIdeaWithUpdate();
+    const before = snapshot(id);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/ideas/${id}`,
+      payload: { title: 'sneaky rename' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('idea_archived');
+    expect(snapshot(id)).toEqual(before);
+  });
+
+  it('rejects a watering with 409 idea_archived and changes nothing', async () => {
+    const { id } = await archivedIdeaWithUpdate();
+    const before = snapshot(id);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/ideas/${id}/updates`,
+      payload: { note: 'sneaky watering' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('idea_archived');
+    expect(snapshot(id)).toEqual(before);
+  });
+
+  it('rejects a timeline-entry edit with 409 idea_archived and changes nothing', async () => {
+    const { id, updateId } = await archivedIdeaWithUpdate();
+    const before = snapshot(id);
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/ideas/${id}/updates/${updateId}`,
+      payload: { note: 'sneaky edit' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('idea_archived');
+    expect(snapshot(id)).toEqual(before);
+  });
+
+  it('rejects a timeline-entry delete with 409 idea_archived and changes nothing', async () => {
+    const { id, updateId } = await archivedIdeaWithUpdate();
+    const before = snapshot(id);
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: `/api/ideas/${id}/updates/${updateId}`,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('idea_archived');
+    expect(snapshot(id)).toEqual(before);
+  });
+
+  it('the stage of an archived idea does not drift across unrelated mutations elsewhere', async () => {
+    const frozen = await plantIdea(app, { title: 'frozen' });
+    await water(app, frozen.id, 'one');
+    await water(app, frozen.id, 'two');
+    await archive(app, frozen.id);
+    const before = snapshot(frozen.id);
+
+    const other = await plantIdea(app, { title: 'busy' });
+    await water(app, other.id, 'a');
+    await water(app, other.id, 'b');
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/ideas/${other.id}`,
+      payload: { title: 'renamed' },
+    });
+
+    expect(snapshot(frozen.id)).toEqual(before);
+  });
+});
+
+describe('POST /api/ideas/:id/unarchive (004 US3)', () => {
+  it('returns the idea to the garden at the same stage, with history intact', async () => {
+    const { id } = await plantIdea(app);
+    for (let i = 0; i < 4; i++) await water(app, id, `watering ${i}`);
+    const before = IdeaDetailResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `/api/ideas/${id}` })).json(),
+    );
+    expect(before.idea.stage).toBe(5);
+    await archive(app, id);
+
+    const res = await app.inject({ method: 'POST', url: `/api/ideas/${id}/unarchive` });
+    expect(res.statusCode).toBe(200);
+    expect(IdeaSchema.parse(res.json()).archived_at).toBeNull();
+
+    const list = IdeaListSchema.parse(
+      (await app.inject({ method: 'GET', url: '/api/ideas' })).json(),
+    );
+    expect(list.map((i) => i.id)).toContain(id);
+    expect(
+      IdeaListSchema.parse(
+        (await app.inject({ method: 'GET', url: '/api/ideas/archived' })).json(),
+      ),
+    ).toEqual([]);
+
+    const after = IdeaDetailResponseSchema.parse(
+      (await app.inject({ method: 'GET', url: `/api/ideas/${id}` })).json(),
+    );
+    expect(after.idea.stage).toBe(5);
+    expect(after.updates).toHaveLength(4);
+  });
+
+  it('an unarchived idea is immediately waterable again (SC-004)', async () => {
+    const { id } = await plantIdea(app);
+    await water(app, id, 'one');
+    await archive(app, id);
+    await app.inject({ method: 'POST', url: `/api/ideas/${id}/unarchive` });
+
+    const result = await water(app, id, 'back in the garden');
+    expect(result.idea.stage).toBe(3);
+  });
+
+  it('a stage-16 idea survives the round trip still fully bloomed', async () => {
+    const { id } = await plantIdea(app);
+    for (let i = 0; i < 15; i++) await water(app, id, `w${i}`);
+    await archive(app, id);
+    const res = await app.inject({ method: 'POST', url: `/api/ideas/${id}/unarchive` });
+    expect(IdeaSchema.parse(res.json()).stage).toBe(16);
+  });
+
+  it('unarchiving an active idea is a harmless no-op (edge case)', async () => {
+    const { id } = await plantIdea(app);
+    const res = await app.inject({ method: 'POST', url: `/api/ideas/${id}/unarchive` });
+    expect(res.statusCode).toBe(200);
+    expect(IdeaSchema.parse(res.json()).archived_at).toBeNull();
+  });
+
+  it('returns 404 idea_not_found for an unknown id', async () => {
+    const fake = 'A'.repeat(26);
+    const res = await app.inject({ method: 'POST', url: `/api/ideas/${fake}/unarchive` });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe('idea_not_found');
   });
 });

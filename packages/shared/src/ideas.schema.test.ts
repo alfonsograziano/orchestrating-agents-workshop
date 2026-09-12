@@ -22,6 +22,7 @@ const goodIdea = {
   stage: 1,
   created_at: 1746783402123,
   updated_at: 1746783402123,
+  archived_at: null,
 };
 
 describe('IdeaSchema', () => {
@@ -294,5 +295,28 @@ describe('MutationResponseSchema', () => {
 
   it('rejects a prev_stage outside the 1–16 range', () => {
     expect(() => MutationResponseSchema.parse({ idea: goodIdea, prev_stage: 17 })).toThrow();
+  });
+});
+
+describe('IdeaSchema — archived_at (004)', () => {
+  it('accepts null for an active idea', () => {
+    expect(IdeaSchema.parse({ ...goodIdea, archived_at: null }).archived_at).toBeNull();
+  });
+
+  it('accepts a timestamp for an archived idea', () => {
+    expect(IdeaSchema.parse({ ...goodIdea, archived_at: 1746783402123 }).archived_at).toBe(
+      1746783402123,
+    );
+  });
+
+  it('requires the field — an idea with no archive marker at all is malformed', () => {
+    const { archived_at: _omitted, ...withoutMarker } = goodIdea;
+    expect(() => IdeaSchema.parse(withoutMarker)).toThrow();
+  });
+
+  it('rejects a non-timestamp marker', () => {
+    expect(() => IdeaSchema.parse({ ...goodIdea, archived_at: 'yesterday' })).toThrow();
+    expect(() => IdeaSchema.parse({ ...goodIdea, archived_at: -1 })).toThrow();
+    expect(() => IdeaSchema.parse({ ...goodIdea, archived_at: 1.5 })).toThrow();
   });
 });

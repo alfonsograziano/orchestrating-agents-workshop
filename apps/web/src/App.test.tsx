@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import type { Idea } from '@idea-garden/shared';
 import { App } from './App.tsx';
 
@@ -14,8 +15,17 @@ const buildIdea = (overrides: Partial<Idea> = {}): Idea => ({
   stage: 1,
   created_at: Date.now(),
   updated_at: Date.now(),
+  archived_at: null,
   ...overrides,
 });
+
+// <App> renders links into the archive, so it needs a router in scope.
+const renderApp = () =>
+  render(
+    <MemoryRouter initialEntries={['/app']}>
+      <App />
+    </MemoryRouter>,
+  );
 
 function mockFetch(impl: (url: string, init?: RequestInit) => Promise<Response>) {
   vi.stubGlobal('fetch', vi.fn(impl));
@@ -39,7 +49,7 @@ afterEach(() => {
 describe('<App> — empty state and creation flow', () => {
   it('renders the empty state when the GET returns []', async () => {
     mockFetch(async () => okJson(200, []));
-    render(<App />);
+    renderApp();
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: /garden is empty/i })).toBeInTheDocument(),
     );
@@ -48,7 +58,7 @@ describe('<App> — empty state and creation flow', () => {
   it('opens the modal when the header "Plant New Seed" button is clicked', async () => {
     mockFetch(async () => okJson(200, []));
     const user = userEvent.setup();
-    render(<App />);
+    renderApp();
     await waitFor(() => screen.getByRole('heading', { name: /garden is empty/i }));
     await user.click(screen.getByRole('button', { name: /plant new seed/i }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
@@ -64,7 +74,7 @@ describe('<App> — empty state and creation flow', () => {
     });
 
     const user = userEvent.setup();
-    render(<App />);
+    renderApp();
     await waitFor(() => screen.getByRole('heading', { name: /garden is empty/i }));
     await user.click(screen.getByRole('button', { name: /plant new seed/i }));
 
@@ -82,7 +92,7 @@ describe('<App> — empty state and creation flow', () => {
 describe('<App> — error surfaces', () => {
   it('shows an error banner when the initial GET fails (no false empty state)', async () => {
     mockFetch(async () => okJson(500, { error: 'internal_error' }));
-    render(<App />);
+    renderApp();
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.queryByRole('heading', { name: /garden is empty/i })).not.toBeInTheDocument();
   });
@@ -99,7 +109,7 @@ describe('<App> — error surfaces', () => {
     });
 
     const user = userEvent.setup();
-    render(<App />);
+    renderApp();
     await waitFor(() => screen.getByRole('heading', { name: /garden is empty/i }));
     await user.click(screen.getByRole('button', { name: /plant new seed/i }));
     // Provide a *locally valid* title so the modal sends the request and the

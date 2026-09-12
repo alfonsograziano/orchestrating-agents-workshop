@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import {
+  ARCHIVED_IDEA_ERROR,
+  NOT_ARCHIVED_IDEA_ERROR,
   EditIdeaInputSchema,
   EditIdeaUpdateInputSchema,
   IdeaDetailResponseSchema,
@@ -29,6 +31,18 @@ function httpError(statusCode: number, code: string): HttpError {
   return err;
 }
 
+/**
+ * Loads an idea and refuses to hand it to a mutating handler while it is
+ * archived. Every write path that touches an idea — or anything belonging to
+ * it — goes through here, so "frozen" is enforced in one place (FR-006).
+ */
+function loadActiveIdea(db: AppDb, id: string): IdeaRow {
+  const idea = db.selectIdeaById.get(id);
+  if (!idea) throw httpError(404, 'idea_not_found');
+  if (idea.archived_at !== null) throw httpError(409, ARCHIVED_IDEA_ERROR);
+  return idea;
+}
+
 export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void {
   app.route({
     method: 'GET',
@@ -40,6 +54,21 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
     },
     handler: async (_request, reply) => {
       const rows = db.selectAllIdeas.all();
+      reply.status(200);
+      return rows;
+    },
+  });
+
+  app.route({
+    method: 'GET',
+    url: '/api/ideas/archived',
+    schema: {
+      response: {
+        200: IdeaListSchema,
+      },
+    },
+    handler: async (_request, reply) => {
+      const rows = db.selectArchivedIdeas.all();
       reply.status(200);
       return rows;
     },
@@ -65,6 +94,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
         stage: 1,
         created_at: now,
         updated_at: now,
+        archived_at: null,
       };
       db.insertIdea.run(row);
       reply.header('Location', `/api/ideas/${row.id}`);
@@ -103,8 +133,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
     },
     handler: async (request) => {
       const { id } = request.params;
-      const current = db.selectIdeaById.get(id);
-      if (!current) throw httpError(404, 'idea_not_found');
+      const current = loadActiveIdea(db, id);
       const prev_stage = current.stage;
       const input = request.body;
       const nextTitle = input.title ?? current.title;
@@ -136,6 +165,9 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
       const { id } = request.params;
       const current = db.selectIdeaById.get(id);
       if (!current) throw httpError(404, 'idea_not_found');
+      // Permanent deletion is reachable only from the archive; the garden
+      // clears cards by archiving (FR-019).
+      if (current.archived_at === null) throw httpError(409, NOT_ARCHIVED_IDEA_ERROR);
       db.deleteIdea.run(id);
       reply.code(204);
       return reply.send();
@@ -154,8 +186,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
     },
     handler: async (request, reply) => {
       const { id } = request.params;
-      const current = db.selectIdeaById.get(id);
-      if (!current) throw httpError(404, 'idea_not_found');
+      const current = loadActiveIdea(db, id);
       const prev_stage = current.stage;
       const { note } = request.body;
 
@@ -199,8 +230,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
       const { id, updateId } = request.params;
       const existing = db.selectUpdateById.get(updateId);
       if (!existing || existing.idea_id !== id) throw httpError(404, 'update_not_found');
-      const current = db.selectIdeaById.get(id);
-      if (!current) throw httpError(404, 'idea_not_found');
+      const current = loadActiveIdea(db, id);
       const prev_stage = current.stage;
       const { note } = request.body;
 
@@ -227,8 +257,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
       const { id, updateId } = request.params;
       const existing = db.selectUpdateById.get(updateId);
       if (!existing || existing.idea_id !== id) throw httpError(404, 'update_not_found');
-      const current = db.selectIdeaById.get(id);
-      if (!current) throw httpError(404, 'idea_not_found');
+      const current = loadActiveIdea(db, id);
       const prev_stage = current.stage;
 
       db.runUpdateMutation(id, (tx) => {
@@ -237,6 +266,46 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
       const idea = db.selectIdeaById.get(id);
       if (!idea) throw httpError(404, 'idea_not_found');
       return { idea, prev_stage };
+    },
+  });
+
+  app.route({
+    method: 'POST',
+    url: '/api/ideas/:id/archive',
+    schema: {
+      params: IdParamsSchema,
+      response: {
+        200: IdeaSchema,
+      },
+    },
+    handler: async (request) => {
+      const { id } = request.params;
+      const current = db.selectIdeaById.get(id);
+      if (!current) throw httpError(404, 'idea_not_found');
+      db.archiveIdea.run({ id, archived_at: Date.now() });
+      const idea = db.selectIdeaById.get(id);
+      if (!idea) throw httpError(404, 'idea_not_found');
+      return idea;
+    },
+  });
+
+  app.route({
+    method: 'POST',
+    url: '/api/ideas/:id/unarchive',
+    schema: {
+      params: IdParamsSchema,
+      response: {
+        200: IdeaSchema,
+      },
+    },
+    handler: async (request) => {
+      const { id } = request.params;
+      const current = db.selectIdeaById.get(id);
+      if (!current) throw httpError(404, 'idea_not_found');
+      db.unarchiveIdea.run(id);
+      const idea = db.selectIdeaById.get(id);
+      if (!idea) throw httpError(404, 'idea_not_found');
+      return idea;
     },
   });
 }

@@ -3,6 +3,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { ulid } from 'ulid';
 import { openDb } from './db.ts';
 
@@ -101,6 +102,7 @@ describe('openDb — idea_updates DDL (T007, US-growth-loop)', () => {
         stage: 1,
         created_at: now,
         updated_at: now,
+        archived_at: null,
       });
       db.insertUpdate.run({
         id: ulid(),
@@ -139,6 +141,7 @@ describe('runUpdateMutation transactional helper (T007)', () => {
       stage: 1,
       created_at: now,
       updated_at: now,
+      archived_at: null,
     });
     return id;
   }
@@ -277,6 +280,7 @@ describe('openDb — durability across connections (T033, US2)', () => {
       stage: 1,
       created_at,
       updated_at: created_at,
+      archived_at: null,
     });
     a.close();
 
@@ -310,6 +314,7 @@ describe('openDb — durability across connections (T033, US2)', () => {
       stage: 1,
       created_at: t,
       updated_at: t,
+      archived_at: null,
     });
     a.insertIdea.run({
       id: ulid(),
@@ -319,6 +324,7 @@ describe('openDb — durability across connections (T033, US2)', () => {
       stage: 1,
       created_at: t + 10,
       updated_at: t + 10,
+      archived_at: null,
     });
     a.close();
 
@@ -328,6 +334,76 @@ describe('openDb — durability across connections (T033, US2)', () => {
       expect(rows.map((r) => r.title)).toEqual(['second', 'first']);
     } finally {
       b.close();
+    }
+  });
+});
+
+describe('openDb — archive column (004)', () => {
+  it('adds archived_at in place to a garden.db written before the archive feature', () => {
+    const dbPath = join(tempDir, 'legacy.db');
+    const id = ulid();
+    const now = Date.now();
+
+    // The pre-004 schema, verbatim in the shape a workshop laptop would have.
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE ideas (
+        id          TEXT    PRIMARY KEY,
+        title       TEXT    NOT NULL,
+        description TEXT,
+        species     TEXT    NOT NULL,
+        stage       INTEGER NOT NULL DEFAULT 1,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+    `);
+    legacy
+      .prepare(
+        `INSERT INTO ideas (id, title, description, species, stage, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, 'planted before archiving existed', null, 'oak', 4, now, now);
+    legacy.close();
+
+    const db = openDb(dbPath);
+    try {
+      const rows = db.selectAllIdeas.all();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.archived_at).toBeNull();
+      expect(rows[0]?.stage).toBe(4);
+      expect(db.selectArchivedIdeas.all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('archiveIdea moves the idea between the two listings without touching updated_at', () => {
+    const db = openDb(join(tempDir, 'archive.db'));
+    try {
+      const id = ulid();
+      const now = Date.now();
+      db.insertIdea.run({
+        id,
+        title: 'movable',
+        description: null,
+        species: 'oak',
+        stage: 3,
+        created_at: now,
+        updated_at: now,
+        archived_at: null,
+      });
+
+      db.archiveIdea.run({ id, archived_at: now + 500 });
+      expect(db.selectAllIdeas.all()).toEqual([]);
+      expect(db.selectArchivedIdeas.all().map((r) => r.id)).toEqual([id]);
+      expect(db.selectIdeaById.get(id)?.updated_at).toBe(now);
+
+      db.unarchiveIdea.run(id);
+      expect(db.selectAllIdeas.all().map((r) => r.id)).toEqual([id]);
+      expect(db.selectArchivedIdeas.all()).toEqual([]);
+      expect(db.selectIdeaById.get(id)?.updated_at).toBe(now);
+    } finally {
+      db.close();
     }
   });
 });

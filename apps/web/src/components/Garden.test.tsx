@@ -14,6 +14,7 @@ const makeIdea = (overrides: Partial<Idea> = {}): Idea => ({
   stage: 1,
   created_at: NOW,
   updated_at: NOW,
+  archived_at: null,
   ...overrides,
 });
 

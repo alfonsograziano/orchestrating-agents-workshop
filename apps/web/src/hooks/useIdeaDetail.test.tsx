@@ -14,6 +14,7 @@ const buildIdea = (overrides: Partial<Idea> = {}): Idea => ({
   stage: 1,
   created_at: 1746783402000,
   updated_at: 1746783402000,
+  archived_at: null,
   ...overrides,
 });
 
