@@ -27,6 +27,12 @@ export type BuildAppOptions = {
   db: AppDb;
   corsOrigin?: string | string[] | boolean;
   logger?: boolean;
+  /**
+   * Source of "now" for everything time-dependent (timestamps the routes
+   * write, and the wilting derivation). Injectable so tests can decide what
+   * time it is; defaults to the real clock.
+   */
+  now?: () => number;
 };
 
 export function buildApp(opts: BuildAppOptions): FastifyTypedInstance {
@@ -56,7 +62,7 @@ export function buildApp(opts: BuildAppOptions): FastifyTypedInstance {
     return reply.status(500).send({ error: 'internal_error' });
   });
 
-  registerIdeasRoutes(app, opts.db);
+  registerIdeasRoutes(app, opts.db, opts.now ?? Date.now);
 
   return app;
 }

@@ -14,7 +14,10 @@ import {
   SpeciesSchema,
 } from './ideas.schema.ts';
 
-const goodIdea = {
+// The shape the API returned before wilting existed. Kept as a fixture so the
+// "the wilting fields are required" assertions below have something to reject:
+// an idea without them is no longer a valid idea.
+const ideaWithoutWilting = {
   id: '01J9YX0G6Q1A8C5XKHQ2N3R7VB',
   title: 'Build an idea garden',
   description: 'A playful CRUD app dressed up as a garden.',
@@ -22,6 +25,14 @@ const goodIdea = {
   stage: 1,
   created_at: 1746783402123,
   updated_at: 1746783402123,
+};
+
+const goodIdea = {
+  ...ideaWithoutWilting,
+  last_watered_at: 1746783402123,
+  ms_since_watered: 0,
+  wilted: false,
+  effective_stage: 1,
 };
 
 describe('IdeaSchema', () => {
@@ -294,5 +305,81 @@ describe('MutationResponseSchema', () => {
 
   it('rejects a prev_stage outside the 1–16 range', () => {
     expect(() => MutationResponseSchema.parse({ idea: goodIdea, prev_stage: 17 })).toThrow();
+  });
+});
+
+describe('IdeaSchema — wilting fields', () => {
+  it('accepts a null last_watered_at (never watered)', () => {
+    const parsed = IdeaSchema.parse({ ...goodIdea, last_watered_at: null });
+    expect(parsed.last_watered_at).toBeNull();
+  });
+
+  it('rejects a payload missing the wilting fields', () => {
+    expect(() => IdeaSchema.parse(ideaWithoutWilting)).toThrow();
+  });
+
+  it('rejects a negative ms_since_watered', () => {
+    expect(() => IdeaSchema.parse({ ...goodIdea, ms_since_watered: -1 })).toThrow();
+  });
+
+  it('rejects a non-boolean wilted', () => {
+    expect(() => IdeaSchema.parse({ ...goodIdea, wilted: 'yes' })).toThrow();
+  });
+
+  it('rejects an effective_stage outside the 1-16 range', () => {
+    expect(() => IdeaSchema.parse({ ...goodIdea, effective_stage: 0 })).toThrow();
+    expect(() => IdeaSchema.parse({ ...goodIdea, effective_stage: 17 })).toThrow();
+  });
+
+  it('allows effective_stage to sit one below stage (the wilted case)', () => {
+    const parsed = IdeaSchema.parse({
+      ...goodIdea,
+      stage: 9,
+      wilted: true,
+      effective_stage: 8,
+    });
+    expect(parsed.stage).toBe(9);
+    expect(parsed.effective_stage).toBe(8);
+  });
+});
+
+describe('IdeaListSchema — wilting fields', () => {
+  it('rejects a list whose entries lack the wilting fields', () => {
+    expect(() => IdeaListSchema.parse([ideaWithoutWilting])).toThrow();
+  });
+});
+
+describe('IdeaDetailResponseSchema — wilting fields', () => {
+  it('carries the wilting fields on the idea', () => {
+    const parsed = IdeaDetailResponseSchema.parse({
+      idea: { ...goodIdea, wilted: true, effective_stage: 1 },
+      updates: [goodUpdate],
+    });
+    expect(parsed.idea.wilted).toBe(true);
+    expect(parsed.updates).toHaveLength(1);
+  });
+
+  it('rejects an idea without them', () => {
+    expect(() =>
+      IdeaDetailResponseSchema.parse({ idea: ideaWithoutWilting, updates: [] }),
+    ).toThrow();
+  });
+});
+
+describe('MutationResponseSchema — wilting fields', () => {
+  it('carries the wilting fields alongside prev_stage and update', () => {
+    const parsed = MutationResponseSchema.parse({
+      idea: goodIdea,
+      prev_stage: 1,
+      update: goodUpdate,
+    });
+    expect(parsed.idea.wilted).toBe(false);
+    expect(parsed.prev_stage).toBe(1);
+  });
+
+  it('rejects an idea without them', () => {
+    expect(() =>
+      MutationResponseSchema.parse({ idea: ideaWithoutWilting, prev_stage: 1 }),
+    ).toThrow();
   });
 });

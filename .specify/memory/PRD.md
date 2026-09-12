@@ -266,10 +266,47 @@ Clicking an idea opens a detail modal where the user can read past updates and a
 - New idea → stage 1.
 - Each update → `stage = min(stage + 1, 16)`.
 - Stage 16 ideas remain at 16 forever; their updates still count and appear in the timeline.
-- "Wilting" (stage going *down* due to neglect) is **stretch** — see §2.7.
+- `stage` is the value the waterings alone earn. Neglect is applied on top of it
+  at read time and never changes this column — see F2.7.
 
 ### F2.6 — Card reflects new stage
 - After closing the modal, the card image on the grid matches the new stage (re-fetch or use returned idea to update local state).
+
+### F2.7 — Wilting (shipped; was stretch)
+
+An idea that has not been watered in a while loses ground, so a garden you have
+walked away from looks like one. Gentle pressure to come back, not a punishment.
+
+- **Threshold:** an idea is *wilted* once `>= 7 days` have passed since its last
+  watering. Exactly 7 days counts as wilted.
+- **Never-watered ideas** are measured from their planting date. A seed nobody
+  came back to is the most neglected thing in the garden.
+- **Cost:** exactly **one** growth stage, however long the neglect lasts.
+  Neglect does not compound.
+- **Floor:** the wilted stage never drops below 1. A Level 1 idea still reports
+  `wilted: true`; it simply has no ground left to lose, so the badge is the only
+  signal for those.
+- **Recovery:** watering restores the lost stage fully and immediately, *plus*
+  the stage the watering itself earns — so a wilted plant climbs two frames.
+- **Derived, never stored.** Wilting is recomputed on every read. Two properties
+  of the model force this: `stage` is rewritten from `MAX(stage_after)` on every
+  mutation, so a stored penalty would be erased by the next write; and nothing
+  writes to the database when time merely passes, so a stored flag would be
+  stale the moment the clock crossed the threshold. No migration, no new column,
+  no background job.
+- **Wire format.** Every idea the API returns — list, detail and all four
+  mutation responses — carries `last_watered_at`, `ms_since_watered`, `wilted`
+  and `effective_stage`. `stage` keeps its existing meaning (waterings only);
+  `effective_stage` is what the client renders.
+- **"Last watered" comes from `idea_updates`**, as `MAX(idea_updates.created_at)`
+  — not from `ideas.updated_at`, which means "last touched" and would let
+  renaming an abandoned idea silently un-wilt it.
+- **UI:** the card and the detail modal render `effective_stage` (plant frame,
+  level badge, progress counter) and pin a `badge-wilted` chip in the metadata
+  row. The card stays white and its border does not change — the chip is the
+  signal, and it is melancholy (`colors.wilted`), never an error color.
+- The card's relative timestamp reads from `last_watered_at` ("Watered 3d ago"),
+  falling back to "Planted Nd ago" for an idea that has never been watered.
 
 ## 2.4 Data model (Step 2 additions)
 
@@ -303,7 +340,8 @@ The POST is **transactional**: insert update + increment stage in one SQLite tra
 - Asset pipeline is manual for the workshop (drop files into the folder).
 
 ## 2.7 Stretch goals (explicitly *not* required to ship Step 2)
-- Wilting: ideas not watered in N days lose a stage.
+- ~~Wilting: ideas not watered in N days lose a stage.~~ **Shipped** — promoted
+  out of stretch at the product owner's request; specified in F2.7.
 - Sidebar filters (Growing / Wilted / Just Seeds / Favorites).
 - Favorites (star toggle).
 - Editing title/description.

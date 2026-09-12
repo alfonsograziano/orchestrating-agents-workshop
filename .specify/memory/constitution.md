@@ -175,10 +175,12 @@ Scope discipline:
   beyond "doesn't break on a laptop", performance at scale, WCAG audit,
   observability tooling) MUST NOT be pulled in by side-quests during
   implementation.
-- Stretch goals in PRD §2.7 (wilting, sidebar filters, favorites, edit,
+- Stretch goals in PRD §2.7 (sidebar filters, favorites, edit,
   delete, "Today's Focus", sort) are explicitly deferred. Implementing one
   during Step 1 or Step 2 requires a PRD update first, not a "while I'm
   here" commit.
+- **Wilting has been promoted out of §2.7** at the product owner's request and
+  is now specified in PRD §2.3 F2.7. It is no longer a side-quest.
 
 ## Development Workflow & Quality Gates
 

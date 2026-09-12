@@ -1,2 +1,6 @@
 node_modules
 data
+
+# Playwright output (apps/web/test-results, playwright-report)
+test-results
+playwright-report

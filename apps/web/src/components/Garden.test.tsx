@@ -6,16 +6,28 @@ import { Garden } from './Garden.tsx';
 
 const NOW = 1746783402000;
 
-const makeIdea = (overrides: Partial<Idea> = {}): Idea => ({
-  id: '01J9YX0G6Q1A8C5XKHQ2N3R7VB',
-  title: 'Build an idea garden',
-  description: 'A playful CRUD app.',
-  species: 'oak',
-  stage: 1,
-  created_at: NOW,
-  updated_at: NOW,
-  ...overrides,
-});
+const makeIdea = (overrides: Partial<Idea> = {}): Idea => {
+  const idea: Idea = {
+    id: '01J9YX0G6Q1A8C5XKHQ2N3R7VB',
+    title: 'Build an idea garden',
+    description: 'A playful CRUD app.',
+    species: 'oak',
+    stage: 1,
+    created_at: NOW,
+    updated_at: NOW,
+    last_watered_at: NOW,
+    ms_since_watered: 0,
+    wilted: false,
+    effective_stage: 1,
+    ...overrides,
+  };
+  // effective_stage is derived server-side; keep the fixture honest so a
+  // test that only sets `stage` still gets a coherent idea back.
+  if (overrides.effective_stage === undefined) {
+    idea.effective_stage = idea.wilted ? Math.max(idea.stage - 1, 1) : idea.stage;
+  }
+  return idea;
+};
 
 describe('<Garden>', () => {
   it('shows the error state when status is error', () => {

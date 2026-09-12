@@ -5,16 +5,28 @@ import type { Idea, IdeaUpdate, MutationResponse } from '@idea-garden/shared';
 
 const ULID = 'A'.repeat(26);
 
-const buildIdea = (overrides: Partial<Idea> = {}): Idea => ({
-  id: ULID,
-  title: 'My Idea',
-  description: 'a description',
-  species: 'oak',
-  stage: 3,
-  created_at: 1746783402000,
-  updated_at: 1746783402000,
-  ...overrides,
-});
+const buildIdea = (overrides: Partial<Idea> = {}): Idea => {
+  const idea: Idea = {
+    id: ULID,
+    title: 'My Idea',
+    description: 'a description',
+    species: 'oak',
+    stage: 3,
+    created_at: 1746783402000,
+    updated_at: 1746783402000,
+    last_watered_at: 1746783402000,
+    ms_since_watered: 0,
+    wilted: false,
+    effective_stage: 1,
+    ...overrides,
+  };
+  // effective_stage is derived server-side; keep the fixture honest so a
+  // test that only sets `stage` still gets a coherent idea back.
+  if (overrides.effective_stage === undefined) {
+    idea.effective_stage = idea.wilted ? Math.max(idea.stage - 1, 1) : idea.stage;
+  }
+  return idea;
+};
 
 const buildUpdate = (overrides: Partial<IdeaUpdate> = {}): IdeaUpdate => ({
   id: 'U'.repeat(26),
@@ -506,5 +518,78 @@ describe('<IdeaDetailModal> — US5 (delete idea)', () => {
 
     await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument());
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('<IdeaDetailModal> — wilting', () => {
+  it('shows a Wilted chip and the wilt-adjusted level for a wilted idea', () => {
+    useIdeaDetailMock.mockReturnValue({
+      status: 'ready',
+      idea: buildIdea({ stage: 7, wilted: true, effective_stage: 6 }),
+      updates: [],
+    });
+    renderModal();
+    expect(screen.getByText('Wilted')).toBeInTheDocument();
+    expect(screen.getByText('Level 6')).toBeInTheDocument();
+    expect(screen.queryByText('Level 7')).not.toBeInTheDocument();
+  });
+
+  it('shows no Wilted chip on a healthy idea', () => {
+    useIdeaDetailMock.mockReturnValue({
+      status: 'ready',
+      idea: buildIdea({ stage: 7 }),
+      updates: [],
+    });
+    renderModal();
+    expect(screen.queryByText('Wilted')).not.toBeInTheDocument();
+    expect(screen.getByText('Level 7')).toBeInTheDocument();
+  });
+
+  it('animates a wilted idea two frames on watering: un-wilt plus the new stage', async () => {
+    const user = userEvent.setup();
+    useIdeaDetailMock.mockReturnValue({
+      status: 'ready',
+      idea: buildIdea({ stage: 4, wilted: true, effective_stage: 3 }),
+      updates: [],
+    });
+    const onAddUpdate = vi.fn(
+      async (): Promise<MutationResponse> => ({
+        // Watering both clears the wilt and earns a stage: 4 -> 5, healthy.
+        idea: buildIdea({ stage: 5, wilted: false, effective_stage: 5 }),
+        // The stored prev_stage (4) is NOT what the animation starts from.
+        prev_stage: 4,
+        update: buildUpdate({ stage_after: 5 }),
+      }),
+    );
+    renderModal({ onAddUpdate });
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'back to it' } });
+    await user.click(screen.getByRole('button', { name: /^water$/i }));
+
+    await waitFor(() => expect(playGrowth).toHaveBeenCalled());
+    expect(playGrowth).toHaveBeenCalledWith({ from: 3, to: 5, palette: 'growth' });
+  });
+
+  it('animates between effective stages for a healthy idea', async () => {
+    const user = userEvent.setup();
+    useIdeaDetailMock.mockReturnValue({
+      status: 'ready',
+      idea: buildIdea({ stage: 3 }),
+      updates: [],
+    });
+    const onAddUpdate = vi.fn(
+      async (): Promise<MutationResponse> => ({
+        idea: buildIdea({ stage: 4 }),
+        prev_stage: 3,
+        update: buildUpdate({ stage_after: 4 }),
+      }),
+    );
+    renderModal({ onAddUpdate });
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'another' } });
+    await user.click(screen.getByRole('button', { name: /^water$/i }));
+
+    await waitFor(() => expect(playGrowth).toHaveBeenCalled());
+    expect(playGrowth).toHaveBeenCalledWith({ from: 3, to: 4, palette: 'growth' });
   });
 });

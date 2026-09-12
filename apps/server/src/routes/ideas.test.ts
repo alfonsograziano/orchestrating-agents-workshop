@@ -10,6 +10,7 @@ import {
 } from '@idea-garden/shared';
 import { buildApp, type FastifyTypedInstance } from '../app.ts';
 import { openDb, type AppDb } from '../db.ts';
+import { WILT_AFTER_MS } from '../wilting.ts';
 
 async function plantIdea(
   app: FastifyTypedInstance,
@@ -705,5 +706,330 @@ describe('POST /api/ideas — round-trip preservation (M1: emoji / HTML injectio
     const idea = IdeaSchema.parse(res.json());
     expect(idea.title).toBe(tricky);
     expect(idea.description).toBe('😀 desc & <b>bold</b>');
+  });
+});
+
+describe('wilting (US-wilting)', () => {
+  // Wilting depends on elapsed time, so these tests drive their own clock.
+  // The suite-level `app` keeps the real clock: several existing tests rely on
+  // Date.now() moving between calls.
+  let clockNow: number;
+  let wiltApp: FastifyTypedInstance;
+
+  beforeEach(async () => {
+    clockNow = Date.now();
+    wiltApp = buildApp({ db, logger: false, corsOrigin: false, now: () => clockNow });
+    await wiltApp.ready();
+  });
+
+  afterEach(async () => {
+    await wiltApp.close();
+  });
+
+  const advance = (ms: number) => {
+    clockNow += ms;
+  };
+
+  const getDetail = async (id: string) => {
+    const res = await wiltApp.inject({ method: 'GET', url: `/api/ideas/${id}` });
+    expect(res.statusCode).toBe(200);
+    return IdeaDetailResponseSchema.parse(res.json());
+  };
+
+  const getFromList = async (id: string) => {
+    const res = await wiltApp.inject({ method: 'GET', url: '/api/ideas' });
+    expect(res.statusCode).toBe(200);
+    const idea = IdeaListSchema.parse(res.json()).find((i) => i.id === id);
+    if (!idea) throw new Error(`idea ${id} missing from list`);
+    return idea;
+  };
+
+  describe('a freshly planted idea', () => {
+    it('is not wilted and reports no watering yet', async () => {
+      const res = await wiltApp.inject({
+        method: 'POST',
+        url: '/api/ideas',
+        payload: { title: 'brand new' },
+      });
+      expect(res.statusCode).toBe(201);
+      const idea = IdeaSchema.parse(res.json());
+      expect(idea.wilted).toBe(false);
+      expect(idea.last_watered_at).toBeNull();
+      expect(idea.ms_since_watered).toBe(0);
+      expect(idea.effective_stage).toBe(1);
+      expect(idea.stage).toBe(1);
+    });
+  });
+
+  describe('threshold boundary', () => {
+    it('is not wilted one millisecond before the threshold', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'watered now');
+      advance(WILT_AFTER_MS - 1);
+
+      const { idea } = await getDetail(id);
+      expect(idea.wilted).toBe(false);
+      expect(idea.ms_since_watered).toBe(WILT_AFTER_MS - 1);
+      expect(idea.effective_stage).toBe(idea.stage);
+    });
+
+    it('is wilted exactly at the threshold', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'watered now');
+      advance(WILT_AFTER_MS);
+
+      const { idea } = await getDetail(id);
+      expect(idea.wilted).toBe(true);
+      expect(idea.ms_since_watered).toBe(WILT_AFTER_MS);
+    });
+  });
+
+  describe('a wilted idea sits one stage below its waterings', () => {
+    it('drops effective_stage by exactly one, however long the neglect lasts', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'one');
+      await water(wiltApp, id, 'two');
+      const healthy = await getDetail(id);
+      expect(healthy.idea.stage).toBe(3);
+      expect(healthy.idea.effective_stage).toBe(3);
+
+      advance(WILT_AFTER_MS);
+      const wilted = await getDetail(id);
+      expect(wilted.idea.wilted).toBe(true);
+      expect(wilted.idea.effective_stage).toBe(2);
+
+      // A year of neglect costs the same single stage.
+      advance(365 * 24 * 60 * 60 * 1000);
+      const longGone = await getDetail(id);
+      expect(longGone.idea.wilted).toBe(true);
+      expect(longGone.idea.effective_stage).toBe(2);
+    });
+
+    it('leaves the stored stage untouched — only the view changes', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'one');
+      await water(wiltApp, id, 'two');
+      advance(WILT_AFTER_MS);
+      await getDetail(id);
+
+      const stored = db.raw.prepare('SELECT stage FROM ideas WHERE id = ?').get(id) as {
+        stage: number;
+      };
+      expect(stored.stage).toBe(3);
+    });
+
+    it('floors at Level 1 — a never-watered seed wilts but cannot drop below 1', async () => {
+      const { id } = await plantIdea(wiltApp, { title: 'abandoned seed' });
+      advance(WILT_AFTER_MS);
+
+      const { idea } = await getDetail(id);
+      expect(idea.stage).toBe(1);
+      expect(idea.wilted).toBe(true);
+      expect(idea.last_watered_at).toBeNull();
+      // Measured from planting, since there is no watering to measure from.
+      expect(idea.ms_since_watered).toBe(WILT_AFTER_MS);
+      expect(idea.effective_stage).toBe(1);
+    });
+
+    it('drops a stage-16 idea to an effective 15', async () => {
+      const { id } = await plantIdea(wiltApp);
+      for (let i = 0; i < 16; i++) {
+        await water(wiltApp, id, `prior ${i}`);
+      }
+      advance(WILT_AFTER_MS);
+
+      const { idea } = await getDetail(id);
+      expect(idea.stage).toBe(16);
+      expect(idea.wilted).toBe(true);
+      expect(idea.effective_stage).toBe(15);
+    });
+  });
+
+  describe('watering a wilted idea', () => {
+    it('restores everything it appeared to lose, immediately', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'one');
+      await water(wiltApp, id, 'two');
+      advance(WILT_AFTER_MS);
+      const before = await getDetail(id);
+      expect(before.idea.wilted).toBe(true);
+      expect(before.idea.effective_stage).toBe(2);
+
+      const res = await wiltApp.inject({
+        method: 'POST',
+        url: `/api/ideas/${id}/updates`,
+        payload: { note: 'back to it' },
+      });
+      expect(res.statusCode).toBe(201);
+      const parsed = MutationResponseSchema.parse(res.json());
+
+      expect(parsed.idea.wilted).toBe(false);
+      expect(parsed.idea.ms_since_watered).toBe(0);
+      expect(parsed.idea.last_watered_at).toBe(clockNow);
+      // Stage 3 before, plus the stage this watering is worth. Nothing the
+      // wilt "took" is permanently lost.
+      expect(parsed.idea.stage).toBe(4);
+      expect(parsed.idea.effective_stage).toBe(4);
+    });
+
+    it('re-wilts after another full threshold of neglect', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'one');
+      advance(WILT_AFTER_MS);
+      expect((await getDetail(id)).idea.wilted).toBe(true);
+
+      await water(wiltApp, id, 'two');
+      expect((await getDetail(id)).idea.wilted).toBe(false);
+
+      advance(WILT_AFTER_MS);
+      expect((await getDetail(id)).idea.wilted).toBe(true);
+    });
+  });
+
+  describe('last_watered_at comes from waterings, not from updated_at', () => {
+    it('ignores a title edit: editing is not watering', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'the only watering');
+      const wateredAt = (await getDetail(id)).idea.last_watered_at;
+      advance(WILT_AFTER_MS);
+
+      // PATCH bumps ideas.updated_at. If wilting read that column, this edit
+      // would silently "un-wilt" the idea.
+      const patch = await wiltApp.inject({
+        method: 'PATCH',
+        url: `/api/ideas/${id}`,
+        payload: { title: 'renamed while neglected' },
+      });
+      expect(patch.statusCode).toBe(200);
+      const parsed = MutationResponseSchema.parse(patch.json());
+
+      expect(parsed.idea.updated_at).toBe(clockNow);
+      expect(parsed.idea.last_watered_at).toBe(wateredAt);
+      expect(parsed.idea.ms_since_watered).toBe(WILT_AFTER_MS);
+      expect(parsed.idea.wilted).toBe(true);
+    });
+
+    it('re-derives from the previous watering when the newest one is deleted', async () => {
+      const { id } = await plantIdea(wiltApp);
+      const first = await water(wiltApp, id, 'one');
+      advance(WILT_AFTER_MS);
+      const second = await water(wiltApp, id, 'two');
+
+      expect((await getDetail(id)).idea.wilted).toBe(false);
+
+      const res = await wiltApp.inject({
+        method: 'DELETE',
+        url: `/api/ideas/${id}/updates/${second.update!.id}`,
+      });
+      expect(res.statusCode).toBe(200);
+      const parsed = MutationResponseSchema.parse(res.json());
+
+      // Only the first watering remains, and it is a full threshold old.
+      expect(parsed.idea.last_watered_at).toBe(first.update!.created_at);
+      expect(parsed.idea.wilted).toBe(true);
+      expect(parsed.idea.ms_since_watered).toBe(WILT_AFTER_MS);
+    });
+
+    it('tracks the newest watering, not the first', async () => {
+      const { id } = await plantIdea(wiltApp);
+      await water(wiltApp, id, 'one');
+      advance(WILT_AFTER_MS);
+      const second = await water(wiltApp, id, 'two');
+
+      const { idea } = await getDetail(id);
+      expect(idea.last_watered_at).toBe(second.update!.created_at);
+      expect(idea.ms_since_watered).toBe(0);
+    });
+  });
+
+  describe('list and detail agree', () => {
+    it('exposes the same wilting view from both endpoints', async () => {
+      const { id } = await plantIdea(wiltApp, { title: 'neglected' });
+      await water(wiltApp, id, 'one');
+      advance(WILT_AFTER_MS);
+
+      const fromList = await getFromList(id);
+      const { idea: fromDetail } = await getDetail(id);
+      expect(fromList).toEqual(fromDetail);
+      expect(fromList.wilted).toBe(true);
+      expect(fromList.effective_stage).toBe(fromList.stage - 1);
+    });
+
+    it('reports each idea independently in the list', async () => {
+      const stale = await plantIdea(wiltApp, { title: 'stale' });
+      await water(wiltApp, stale.id, 'long ago');
+      advance(WILT_AFTER_MS);
+      const fresh = await plantIdea(wiltApp, { title: 'fresh' });
+      await water(wiltApp, fresh.id, 'just now');
+
+      expect((await getFromList(stale.id)).wilted).toBe(true);
+      expect((await getFromList(fresh.id)).wilted).toBe(false);
+    });
+  });
+
+  describe('every endpoint decorates the idea it returns', () => {
+    // The wilting fields are required on IdeaSchema, so an endpoint that forgot
+    // the view() helper would fail serialization rather than quietly ship a
+    // bare row. This walks all seven so that stays true.
+    const WILTING_KEYS = [
+      'last_watered_at',
+      'ms_since_watered',
+      'wilted',
+      'effective_stage',
+    ] as const;
+
+    it('returns the wilting fields from create, list, detail and all four mutations', async () => {
+      const created = await wiltApp.inject({
+        method: 'POST',
+        url: '/api/ideas',
+        payload: { title: 'decorated everywhere' },
+      });
+      expect(created.statusCode).toBe(201);
+      const id = IdeaSchema.parse(created.json()).id;
+
+      const watered = await wiltApp.inject({
+        method: 'POST',
+        url: `/api/ideas/${id}/updates`,
+        payload: { note: 'one' },
+      });
+      expect(watered.statusCode).toBe(201);
+      const updateId = MutationResponseSchema.parse(watered.json()).update?.id;
+      if (!updateId) throw new Error('watering returned no update');
+
+      const edited = await wiltApp.inject({
+        method: 'PATCH',
+        url: `/api/ideas/${id}`,
+        payload: { title: 'renamed' },
+      });
+      const editedUpdate = await wiltApp.inject({
+        method: 'PATCH',
+        url: `/api/ideas/${id}/updates/${updateId}`,
+        payload: { note: 'one, revised' },
+      });
+      const deletedUpdate = await wiltApp.inject({
+        method: 'DELETE',
+        url: `/api/ideas/${id}/updates/${updateId}`,
+      });
+
+      advance(WILT_AFTER_MS);
+      const list = await wiltApp.inject({ method: 'GET', url: '/api/ideas' });
+      const detail = await wiltApp.inject({ method: 'GET', url: `/api/ideas/${id}` });
+
+      const ideas = [
+        created.json(),
+        watered.json().idea,
+        edited.json().idea,
+        editedUpdate.json().idea,
+        deletedUpdate.json().idea,
+        list.json().find((i: { id: string }) => i.id === id),
+        detail.json().idea,
+      ];
+      expect(ideas).toHaveLength(7);
+      for (const idea of ideas) {
+        for (const key of WILTING_KEYS) {
+          expect(idea).toHaveProperty(key);
+        }
+      }
+    });
   });
 });

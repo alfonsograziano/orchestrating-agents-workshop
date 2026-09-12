@@ -16,9 +16,20 @@ const MAX_STAGE = 16;
 
 export function IdeaCard({ idea, index, now, onOpen }: IdeaCardProps) {
   const reference = now ?? Date.now();
-  const clampedStage = Math.max(0, Math.min(MAX_STAGE, idea.stage));
+  // The card renders `effective_stage`, not `stage`: a wilted idea sits one
+  // growth stage below what its waterings earned, and the plant is the main
+  // place the user feels that. `stage` is the unpenalised value and is never
+  // shown — the two differ only while the idea is wilted.
+  const displayStage = idea.effective_stage;
+  const clampedStage = Math.max(0, Math.min(MAX_STAGE, displayStage));
   const fillPct = (clampedStage / MAX_STAGE) * 100;
-  const bloomed = idea.stage >= MAX_STAGE;
+  const bloomed = displayStage >= MAX_STAGE;
+  // `last_watered_at` is null for an idea that has never been watered; there is
+  // no watering to date, so the card falls back to the planting date and says so.
+  const timestampLabel =
+    idea.last_watered_at == null
+      ? `Planted ${relativeTime(reference, idea.created_at)}`
+      : `Watered ${relativeTime(reference, idea.last_watered_at)}`;
 
   const handleActivate = () => {
     if (onOpen) onOpen(idea.id);
@@ -59,13 +70,13 @@ export function IdeaCard({ idea, index, now, onOpen }: IdeaCardProps) {
               : 'bg-primary-soft text-primary-hover text-caption rounded-full px-sm py-[2px]'
           }
         >
-          {bloomed ? 'Bloomed' : `Level ${idea.stage}`}
+          {bloomed ? 'Bloomed' : `Level ${displayStage}`}
         </span>
       </div>
 
       <div className="relative h-48 flex items-center justify-center">
         <div className="plant-rise">
-          <PlantImage species={idea.species} stage={idea.stage} className="w-44 h-44 object-contain" />
+          <PlantImage species={idea.species} stage={displayStage} className="w-44 h-44 object-contain" />
         </div>
       </div>
 
@@ -91,12 +102,19 @@ export function IdeaCard({ idea, index, now, onOpen }: IdeaCardProps) {
             aria-hidden
           />
         </div>
-        <div className="flex items-center justify-between text-caption text-ink/55">
+        <div className="flex items-center justify-between gap-xs text-caption text-ink/55">
           <span className="font-mono tracking-[0.05em]">
             {String(clampedStage).padStart(2, '0')}/{MAX_STAGE}
           </span>
-          <span className="italic">
-            Watered {relativeTime(reference, idea.created_at)}
+          <span className="flex items-center gap-xs min-w-0">
+            {idea.wilted && (
+              // design.md: the card itself stays white — this chip is the only
+              // signal, and it is melancholy (colors.wilted), never an error.
+              <span className="bg-wilted-soft text-wilted rounded-full px-sm py-[2px] shrink-0">
+                Wilted
+              </span>
+            )}
+            <span className="italic truncate">{timestampLabel}</span>
           </span>
         </div>
       </div>

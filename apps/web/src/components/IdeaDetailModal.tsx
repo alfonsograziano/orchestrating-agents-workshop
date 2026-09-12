@@ -98,20 +98,25 @@ export function IdeaDetailModal({
     setModalError(null);
     try {
       const result = await onAddUpdate(localIdea.id, { note });
-      const palette = result.idea.stage === 16 ? 'bloom' : 'growth';
-      const isBloom = result.prev_stage < 16 && result.idea.stage === 16;
-      const isFirstWatering = result.prev_stage === 1 && result.idea.stage === 2;
+      // The animation runs between the frames actually on screen, so both ends
+      // are `effective_stage`. `result.prev_stage` is deliberately unused: it is
+      // the *stored* stage, and diffing it against a wilt-adjusted stage would
+      // compare two different quantities. `from` is the idea's own previous
+      // effective stage — still a server-returned value, just the earlier read.
+      // Watering a wilted idea therefore climbs two frames: it un-wilts (+1)
+      // and earns the watering's own stage (+1).
+      const from = localIdea.effective_stage;
+      const to = result.idea.effective_stage;
+      const palette = to === 16 ? 'bloom' : 'growth';
+      const isBloom = from < 16 && to === 16;
+      const isFirstWatering = from === 1 && to === 2;
       if (isBloom) {
         setConfetti('bloom');
       } else if (isFirstWatering) {
         setConfetti('firstWatering');
       }
       if (plantRef.current) {
-        await plantRef.current.playGrowth({
-          from: result.prev_stage,
-          to: result.idea.stage,
-          palette,
-        });
+        await plantRef.current.playGrowth({ from, to, palette });
       }
       setLocalIdea(result.idea);
       if (result.update) {
@@ -293,8 +298,13 @@ export function IdeaDetailModal({
                           {localIdea.description}
                         </p>
                       )}
-                      <div className="mt-xs">
-                        <LevelBadge stage={localIdea.stage} />
+                      <div className="mt-xs flex items-center gap-sm">
+                        <LevelBadge stage={localIdea.effective_stage} />
+                        {localIdea.wilted && (
+                          <span className="bg-wilted-soft text-wilted text-caption rounded-full px-sm py-[2px]">
+                            Wilted
+                          </span>
+                        )}
                       </div>
                     </>
                   )}
@@ -304,7 +314,7 @@ export function IdeaDetailModal({
                   <PlantViewport
                     ref={plantRef}
                     species={localIdea.species}
-                    stage={localIdea.stage}
+                    stage={localIdea.effective_stage}
                   />
                 </div>
 

@@ -6,16 +6,28 @@ import { App } from './App.tsx';
 
 const ULID = 'A'.repeat(26);
 
-const buildIdea = (overrides: Partial<Idea> = {}): Idea => ({
-  id: ULID,
-  title: 'Build an idea garden',
-  description: null,
-  species: 'oak',
-  stage: 1,
-  created_at: Date.now(),
-  updated_at: Date.now(),
-  ...overrides,
-});
+const buildIdea = (overrides: Partial<Idea> = {}): Idea => {
+  const idea: Idea = {
+    id: ULID,
+    title: 'Build an idea garden',
+    description: null,
+    species: 'oak',
+    stage: 1,
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    last_watered_at: Date.now(),
+    ms_since_watered: 0,
+    wilted: false,
+    effective_stage: 1,
+    ...overrides,
+  };
+  // effective_stage is derived server-side; keep the fixture honest so a
+  // test that only sets `stage` still gets a coherent idea back.
+  if (overrides.effective_stage === undefined) {
+    idea.effective_stage = idea.wilted ? Math.max(idea.stage - 1, 1) : idea.stage;
+  }
+  return idea;
+};
 
 function mockFetch(impl: (url: string, init?: RequestInit) => Promise<Response>) {
   vi.stubGlobal('fetch', vi.fn(impl));

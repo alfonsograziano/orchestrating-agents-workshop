@@ -50,6 +50,13 @@ function makeTempIdea(input: NewIdeaInput): Idea {
     stage: 1,
     created_at: now,
     updated_at: now,
+    // A just-planted idea has never been watered and cannot be wilted. The
+    // server replaces this whole object on success, so these are only ever the
+    // values rendered during the optimistic frame.
+    last_watered_at: null,
+    ms_since_watered: 0,
+    wilted: false,
+    effective_stage: 1,
   };
 }
 

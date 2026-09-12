@@ -17,6 +17,12 @@ export type IdeaRow = {
   updated_at: number;
 };
 
+// What a read of `ideas` actually yields. `last_watered_at` is NOT a column:
+// it is MAX(idea_updates.created_at), derived per row at read time. The stored
+// `updated_at` cannot stand in for it — that column means "last touched" and is
+// bumped by every mutation, a title edit included.
+export type IdeaReadRow = IdeaRow & { last_watered_at: number | null };
+
 export type IdeaUpdateRow = {
   id: string;
   idea_id: string;
@@ -31,14 +37,14 @@ export type TxHandle = {
   deleteUpdate: Database.Statement<[string]>;
   selectUpdateById: Database.Statement<[string], IdeaUpdateRow | undefined>;
   selectMaxStageAfter: Database.Statement<[string], { max_stage: number | null } | undefined>;
-  selectIdeaById: Database.Statement<[string], IdeaRow | undefined>;
+  selectIdeaById: Database.Statement<[string], IdeaReadRow | undefined>;
 };
 
 export type AppDb = {
   raw: Database.Database;
-  selectAllIdeas: Database.Statement<unknown[], IdeaRow>;
+  selectAllIdeas: Database.Statement<unknown[], IdeaReadRow>;
   insertIdea: Database.Statement<[IdeaRow]>;
-  selectIdeaById: Database.Statement<[string], IdeaRow | undefined>;
+  selectIdeaById: Database.Statement<[string], IdeaReadRow | undefined>;
   selectUpdatesForIdea: Database.Statement<[string], IdeaUpdateRow>;
   insertUpdate: Database.Statement<[IdeaUpdateRow]>;
   updateUpdateNote: Database.Statement<{ id: string; note: string }>;
@@ -96,11 +102,16 @@ export function openDb(dbPath: string = process.env.DB_PATH ?? 'data/garden.db')
   raw.pragma('foreign_keys = ON');
   raw.exec(SCHEMA_DDL);
 
+  // The correlated subquery answers "when was this last watered" straight from
+  // the waterings themselves, so deleting the newest update re-derives it for
+  // free. It rides the existing idx_updates_idea_id_created index.
   const selectAllIdeas = raw.prepare(
-    `SELECT id, title, description, species, stage, created_at, updated_at
-       FROM ideas
-       ORDER BY created_at DESC, id DESC`,
-  ) as Database.Statement<unknown[], IdeaRow>;
+    `SELECT i.id, i.title, i.description, i.species, i.stage, i.created_at, i.updated_at,
+            (SELECT MAX(u.created_at) FROM idea_updates u WHERE u.idea_id = i.id)
+              AS last_watered_at
+       FROM ideas i
+       ORDER BY i.created_at DESC, i.id DESC`,
+  ) as Database.Statement<unknown[], IdeaReadRow>;
 
   const insertIdea = raw.prepare(
     `INSERT INTO ideas (id, title, description, species, stage, created_at, updated_at)
@@ -108,10 +119,12 @@ export function openDb(dbPath: string = process.env.DB_PATH ?? 'data/garden.db')
   ) as Database.Statement<[IdeaRow]>;
 
   const selectIdeaById = raw.prepare(
-    `SELECT id, title, description, species, stage, created_at, updated_at
-       FROM ideas
-       WHERE id = ?`,
-  ) as Database.Statement<[string], IdeaRow | undefined>;
+    `SELECT i.id, i.title, i.description, i.species, i.stage, i.created_at, i.updated_at,
+            (SELECT MAX(u.created_at) FROM idea_updates u WHERE u.idea_id = i.id)
+              AS last_watered_at
+       FROM ideas i
+       WHERE i.id = ?`,
+  ) as Database.Statement<[string], IdeaReadRow | undefined>;
 
   const selectUpdatesForIdea = raw.prepare(
     `SELECT id, idea_id, note, stage_after, created_at

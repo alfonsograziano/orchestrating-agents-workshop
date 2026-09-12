@@ -15,6 +15,33 @@ export const IdeaSchema = z.object({
   stage: StageSchema,
   created_at: z.number().int().nonnegative(),
   updated_at: z.number().int().nonnegative(),
+
+  // --- Wilting ---------------------------------------------------------
+  //
+  // Wilting is DERIVED AT READ TIME, never stored. Two facts about the model
+  // force that:
+  //
+  //   1. `stage` is not a counter. The server recomputes it as
+  //      MAX(idea_updates.stage_after) on every mutation, so a wilt penalty
+  //      written into the column would be erased by the next write.
+  //   2. Nothing writes to the database when time merely passes — and wilting
+  //      is a function of elapsed time. A stored flag would be stale the
+  //      instant the clock crossed the threshold.
+  //
+  // So `stage` above keeps its existing meaning (where the waterings alone put
+  // the idea) and the four fields below carry the time-dependent view of it.
+
+  // Epoch ms of the newest watering, or null when the idea has never been
+  // watered. NOT `updated_at`: that column means "last touched" — editing a
+  // title bumps it — so it cannot answer "when was this last watered".
+  last_watered_at: z.number().int().nonnegative().nullable(),
+  // Elapsed ms since that watering (since planting, for a never-watered idea),
+  // measured against the server clock so clients need no clock of their own.
+  ms_since_watered: z.number().int().nonnegative(),
+  wilted: z.boolean(),
+  // What the UI renders: `stage` when healthy, one below it when wilted,
+  // floored at 1. Wilting costs exactly one stage no matter how long it lasts.
+  effective_stage: StageSchema,
 });
 export type Idea = z.infer<typeof IdeaSchema>;
 

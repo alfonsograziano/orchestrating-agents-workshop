@@ -5,16 +5,28 @@ import { useIdeas } from './useIdeas.ts';
 
 const ULID = 'B'.repeat(26);
 
-const buildIdea = (overrides: Partial<Idea> = {}): Idea => ({
-  id: ULID,
-  title: 'Persisted idea',
-  description: null,
-  species: 'oak',
-  stage: 1,
-  created_at: 1746783402000,
-  updated_at: 1746783402000,
-  ...overrides,
-});
+const buildIdea = (overrides: Partial<Idea> = {}): Idea => {
+  const idea: Idea = {
+    id: ULID,
+    title: 'Persisted idea',
+    description: null,
+    species: 'oak',
+    stage: 1,
+    created_at: 1746783402000,
+    updated_at: 1746783402000,
+    last_watered_at: 1746783402000,
+    ms_since_watered: 0,
+    wilted: false,
+    effective_stage: 1,
+    ...overrides,
+  };
+  // effective_stage is derived server-side; keep the fixture honest so a
+  // test that only sets `stage` still gets a coherent idea back.
+  if (overrides.effective_stage === undefined) {
+    idea.effective_stage = idea.wilted ? Math.max(idea.stage - 1, 1) : idea.stage;
+  }
+  return idea;
+};
 
 const okJson = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), {

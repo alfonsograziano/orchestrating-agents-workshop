@@ -11,8 +11,9 @@ import {
   NewIdeaUpdateInputSchema,
 } from '@idea-garden/shared';
 import type { FastifyTypedInstance } from '../app.ts';
-import type { AppDb, IdeaRow, IdeaUpdateRow } from '../db.ts';
+import type { AppDb, IdeaReadRow, IdeaRow, IdeaUpdateRow } from '../db.ts';
 import { randomSpecies } from '../species.ts';
+import { withWilting } from '../wilting.ts';
 
 const IdParamsSchema = z.object({ id: z.string().length(26) });
 const IdAndUpdateIdParamsSchema = z.object({
@@ -29,7 +30,15 @@ function httpError(statusCode: number, code: string): HttpError {
   return err;
 }
 
-export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void {
+export function registerIdeasRoutes(
+  app: FastifyTypedInstance,
+  db: AppDb,
+  now: () => number = Date.now,
+): void {
+  // Every idea leaves this file through here, so the list, the detail view and
+  // every mutation response answer "is it wilted?" the same way.
+  const view = (row: IdeaReadRow) => withWilting(row, now());
+
   app.route({
     method: 'GET',
     url: '/api/ideas',
@@ -41,7 +50,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
     handler: async (_request, reply) => {
       const rows = db.selectAllIdeas.all();
       reply.status(200);
-      return rows;
+      return rows.map(view);
     },
   });
 
@@ -56,20 +65,20 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
     },
     handler: async (request, reply) => {
       const { title, description } = request.body;
-      const now = Date.now();
+      const plantedAt = now();
       const row: IdeaRow = {
         id: ulid(),
         title,
         description: description ?? null,
         species: randomSpecies(),
         stage: 1,
-        created_at: now,
-        updated_at: now,
+        created_at: plantedAt,
+        updated_at: plantedAt,
       };
       db.insertIdea.run(row);
       reply.header('Location', `/api/ideas/${row.id}`);
       reply.status(201);
-      return row;
+      return view({ ...row, last_watered_at: null });
     },
   });
 
@@ -87,7 +96,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
       const idea = db.selectIdeaById.get(id);
       if (!idea) throw httpError(404, 'idea_not_found');
       const updates = db.selectUpdatesForIdea.all(id);
-      return { idea, updates };
+      return { idea: view(idea), updates };
     },
   });
 
@@ -118,11 +127,13 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
         id,
         title: nextTitle,
         description: nextDescription,
-        updated_at: Date.now(),
+        updated_at: now(),
       });
       const idea = db.selectIdeaById.get(id);
       if (!idea) throw httpError(404, 'idea_not_found');
-      return { idea, prev_stage };
+      // Editing a title bumps `updated_at` but waters nothing, so the wilting
+      // view below is deliberately unaffected by this write.
+      return { idea: view(idea), prev_stage };
     },
   });
 
@@ -170,7 +181,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
           idea_id: id,
           note,
           stage_after: Math.min(baseline + 1, 16),
-          created_at: Date.now(),
+          created_at: now(),
         };
         tx.insertUpdate.run(row);
         return row;
@@ -181,7 +192,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
 
       reply.header('Location', `/api/ideas/${id}/updates/${updateRow.id}`);
       reply.status(201);
-      return { idea, prev_stage, update: updateRow };
+      return { idea: view(idea), prev_stage, update: updateRow };
     },
   });
 
@@ -210,7 +221,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
       });
       const idea = db.selectIdeaById.get(id);
       if (!idea || !updated) throw httpError(404, 'update_not_found');
-      return { idea, prev_stage, update: updated };
+      return { idea: view(idea), prev_stage, update: updated };
     },
   });
 
@@ -236,7 +247,7 @@ export function registerIdeasRoutes(app: FastifyTypedInstance, db: AppDb): void 
       });
       const idea = db.selectIdeaById.get(id);
       if (!idea) throw httpError(404, 'idea_not_found');
-      return { idea, prev_stage };
+      return { idea: view(idea), prev_stage };
     },
   });
 }
